@@ -1,12 +1,23 @@
 breed [ farmers farmer ]
-farmers-own [ land-size profit crop-stage crop-quality ]
-globals total-land
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water ]
+globals [ total-land farmer-order crop-water-req ]
 
 to setup
   clear-all
   reset-ticks
   setup-patches
   setup-farmers
+  set crop-water-req [ ; requirement for rice: each stage lasts multiple weeks, hence the repeating values
+    0.6 0.6 0.6
+    0.8 0.8 0.8
+    1.5 1.5 1.5 1.5 1.5
+    0.5 0.5
+    0.3 0.3
+    0.5 0.5
+    1.1 1.1 1.1 1.1
+    0.2 0.2]
+  update-land
+  ;foreach farmer-order [ x -> show [ycor] of x ]
 end
 
 to setup-patches
@@ -15,19 +26,52 @@ end
 
 to setup-farmers
   let temp-count 0
+  set farmer-order []
   create-farmers num-farmers [
-    set land-size 4 + random 10
-    set total-land total-land + land-size
-    let temp-size land-size
-    ask patches with [ pycor = temp-count and pxcor > 0 and pxcor <= temp-size ] [ set pcolor green ]
-    set shape "person farmer"
-    setxy (1 + land-size / 2) temp-count
-    set temp-count temp-count + 1
+    set shape "person farmer" ; agent is a farmer
+    set land-size 4 + random 10 ; give random amount of land
+    set crop-stage random 5 ; crop stage is between 0 - 4 initially
+    set crop-quality 0.8 + (random-float 0.4) ; crop quality is between 0.8 - 1.2 initially
+    set total-land total-land + land-size ; update total for water division
+    setxy (1 + land-size / 2) (length farmer-order); place agent in the middle of their land in their corresponding row
+
+    set farmer-order lput self farmer-order ; create ordering of farmers from bottom to top
   ]
 end
 
+to-report my-land
+  report patches with [ pycor = [ycor] of myself and pxcor > 0 and pxcor <= [land-size] of myself ] ; update color of my farmland depending on how far along my crops are
+end
+
+to update-land
+  ask farmers [ ask my-land [ set pcolor scale-color ([color] of myself) ([crop-stage] of myself) -10 (10 + length crop-water-req)]] ; mark my land based on how close to harvest
+end
+
 to go
+  update-land
+  let water-per-acre (total-flow / total-land)
+  ask farmers [ set-farmer-water water-per-acre ]
+  ask farmers [ grow-crops ]
+  ;show [required-water] of farmers
   tick
+end
+
+to set-farmer-water [ water-per-acre ]
+  set available-water (land-size * water-per-acre)
+  set required-water (land-size * (item crop-stage crop-water-req))
+  ;show required-water
+end
+
+to grow-crops
+  let multiplier available-water / required-water ; quality multiplier based on how little or excess water we have
+  set multiplier max (list 0.8 (min (list multiplier 1.2))) ; clamp multiplier between 0.8 and 1.2
+  set crop-quality (multiplier * crop-quality) ; update crop quality based on how much water we gave
+  set crop-stage (crop-stage + 1) ; crops grow to next stage
+  if (crop-stage > 22) [
+    set wealth (wealth + (crop-quality * land-size))
+    set crop-stage 0
+    set crop-quality 1
+  ]
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -75,13 +119,13 @@ NIL
 1
 
 BUTTON
-109
+179
 27
-172
+242
 60
 NIL
 go
-NIL
+T
 1
 T
 OBSERVER
@@ -92,19 +136,98 @@ NIL
 1
 
 SLIDER
-30
-80
-202
-113
+49
+77
+221
+110
 num-farmers
 num-farmers
 0
 33
-33.0
+28.0
 1
 1
 NIL
 HORIZONTAL
+
+MONITOR
+271
+20
+343
+65
+NIL
+total-land
+17
+1
+11
+
+SLIDER
+49
+122
+221
+155
+total-flow
+total-flow
+0
+500
+175.0
+5
+1
+NIL
+HORIZONTAL
+
+PLOT
+916
+19
+1138
+191
+Water Required
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 1 -13840069 true "" "histogram [required-water] of farmers"
+
+PLOT
+917
+223
+1148
+390
+Crop Quality
+NIL
+NIL
+0.0
+5.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 0.2 1 -2674135 true "" "histogram [crop-quality] of farmers"
+
+BUTTON
+107
+27
+170
+60
+step
+go
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -117,6 +240,8 @@ HORIZONTAL
 
 ## HOW TO USE IT
 
+total-flow is in 1000 m^3 / acre
+land is in acres
 (how to use the model, including a description of each of the items in the Interface tab)
 
 ## THINGS TO NOTICE
