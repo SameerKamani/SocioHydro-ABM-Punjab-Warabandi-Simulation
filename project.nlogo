@@ -1,6 +1,6 @@
 breed [ farmers farmer ]
-farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness connections social-credit ]
-globals [ total-land farmer-order crop-water-req week season total-flow  ]
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness connections social-credit theft-history last-stolen my-turn? predicted-water]
+globals [ total-land farmer-order crop-water-req week season total-flow total-thefts detected-thefts ]
 
 to setup
   clear-all
@@ -8,6 +8,8 @@ to setup
   setup-patches
   setup-farmers
   set week 1
+  set total-thefts 0
+  set detected-thefts 0
   set season "rabi"
   set total-flow base-flow
   set crop-water-req [
@@ -40,6 +42,7 @@ to setup-farmers
     set farmer-order lput self farmer-order ; create ordering of farmers from bottom to top
     set friendliness 0.5 + random-float 0.5 ; initial friendliness for social sharing
     set social-credit 0 ; initial social credit
+    set theft-history []
   ]
   ; assign random connections for social network
   ask farmers [
@@ -63,6 +66,7 @@ to go
   update-land
   allocate-water ; distribute water to farmers based on availability
   share-water ; farmers request/share water with their connections
+  attempt-theft
   ask farmers [ grow-crops ] ; update crop growth and quality
   tick
 end
@@ -84,43 +88,45 @@ to allocate-water
       ask f [
         set available-water water-given
         set required-water water-need
+        set predicted-water water-given ; predicted water is only initial allocation
       ]
       set remaining-water remaining-water - water-given ; reduce water for next farmer
   ]
 end
 
+
 to share-water
   foreach farmer-order [
     f ->
       ask f [
-        let deficit required-water - available-water ; if water received is less than required
+        let deficit required-water - available-water  ; how much water this farmer still needs
         if deficit > 0 [
           foreach sort connections [
             conn ->
-              let donor-available [available-water] of conn ; water that the connected farmer can give
+              let donor-available [available-water] of conn  ; water that the connected farmer can give
               if donor-available > 0 [
-                let share-prob ([friendliness] of conn) * (0.1 + donor-available / [required-water] of conn) * (1 + (ln (1 + [social-credit] of conn) / 10))  ; probability donor agrees made it realsitc by adding natural log  its based on friendliness and social credits
-                set share-prob min (list 1 share-prob)  ; cap at 1
-                set share-prob min (list 1 share-prob)
-                set share-prob max (list 0 share-prob)
+                ;; increase probability impact
+                let safe-social max list 0 [social-credit] of conn  ; ensure social-credit is non-negative
+                let share-prob ([friendliness] of conn) * (0.2 + donor-available / [required-water] of conn) * (1 + ln (1 + safe-social) / 5)  ; probability donor agrees, stronger influence than old version
+                set share-prob max list 0 (min list 1 share-prob)  ; cap between 0 and 1
 
                 if random-float 1 < share-prob [
-                  let water-to-share min (list deficit donor-available (0.3 * donor-available)) ; actual water transferred maximum shared is 30%
-                  set available-water available-water + water-to-share
+                  let water-to-share min (list deficit donor-available (0.5 * donor-available))  ; max 50% of donor's water shared
+                  set available-water available-water + water-to-share  ; recipient gains water
                   set deficit deficit - water-to-share
-                  set friendliness friendliness + 0.03 * (1 - friendliness) ; increase friendliness slightly after receiving help
+                  set friendliness friendliness + 0.1 * (1 - friendliness)  ; recipient friendliness increases more
                   ask conn [
-                    set available-water available-water - water-to-share
-                    set social-credit min (list 10 (social-credit + water-to-share)) ; donor gains social credit
-                    set friendliness friendliness + 0.03 * (1 - friendliness)
-                    if friendliness > 1 [ set friendliness 1 ]
+                    set available-water available-water - water-to-share  ; donor loses water
+                    set social-credit min (list 10 (social-credit + water-to-share))  ; donor gains stronger social credit
+                    set friendliness friendliness + 0.05 * (1 - friendliness)  ; donor friendliness increases slightly
+                    if friendliness > 1 [ set friendliness 1 ]  ; cap friendliness at 1
                   ]
                 ]
 
                 if random-float 1 >= share-prob [
                   ask conn [
-                    set friendliness friendliness - 0.02 * friendliness ; donor slightly decreases friendliness if refused
-                    if friendliness < 0 [ set friendliness 0 ]
+                    set friendliness friendliness - 0.05 * friendliness  ; donor slightly decreases friendliness if refused
+                    if friendliness < 0 [ set friendliness 0 ]  ; prevent negative friendliness
                   ]
                 ]
               ]
@@ -130,9 +136,89 @@ to share-water
   ]
 
   ask farmers [
-    set social-credit social-credit * 0.98 ; decay social credit slightly over time
+    set social-credit social-credit * 0.99  ; slow decay so changes persist
   ]
 end
+
+
+
+
+to attempt-theft
+  let thefts-tick []  ; collect all thefts this tick
+
+  foreach farmer-order [
+    thief ->
+      ask thief [
+        let deficit required-water - available-water  ; how much water thief still needs
+        if deficit > 0 [
+          let possible-targets other farmers with [ pxcor > [pxcor] of thief ]  ; only downstream farmers
+          if any? possible-targets [
+            let sorted-targets sort-by [[a b] -> (([available-water] of a + [social-credit] of a) > ([available-water] of b + [social-credit] of b))] possible-targets  ; prioritize richer/creditworthy targets
+            let victim first sorted-targets  ; choose first as victim
+            let base-prob 0.2  ; base probability of attempting theft
+            let water-factor min list 1 (deficit / required-water)  ; more deficit -> higher probability
+            let social-factor 1 - ([social-credit] of victim / 10)  ; victim’s social credit reduces theft chance
+            let friend-factor 1 - [friendliness] of victim  ; friendly victims are harder to steal from
+            let upstream-factor 1 - (position thief farmer-order * 0.05)  ; upstream farmers less likely to steal
+            let retaliation-factor ifelse-value ([last-stolen] of victim > 0) [0.5] [1]  ; reduce chance if victim was recently stolen
+            let theft-prob base-prob * water-factor * social-factor * friend-factor * upstream-factor * retaliation-factor  ; final probability
+
+            if random-float 1 < theft-prob [
+              let stolen min list deficit (0.5 * [available-water] of victim)  ; thief can take up to 50% of victim’s water
+              set available-water available-water + stolen  ; thief gains stolen water
+              set social-credit social-credit - 0.1  ; penalty for thief
+              ask victim [
+                set available-water available-water - stolen  ; victim loses water
+                set friendliness friendliness - 0.2  ; victim trust decreases
+              ]
+              set thefts-tick lput (list thief victim stolen) thefts-tick  ; record theft
+            ]
+          ]
+        ]
+      ]
+  ]
+
+  set total-thefts total-thefts + length thefts-tick  ; update global theft count
+  foreach thefts-tick [
+    t ->
+      let thief first t
+      let victim item 1 t
+      let stolen item 2 t
+      let deviation ([predicted-water] of victim - [available-water] of victim)  ; how much water missing
+      let threshold 0.25 * [predicted-water] of victim  ; detection threshold
+      if deviation > threshold and random-float 1 < 0.7 [
+        ask victim [
+          set last-stolen deviation  ; mark theft
+          set friendliness friendliness * 0.6  ; reduce trust strongly
+          set social-credit 0  ; reset social credit
+        ]
+        set detected-thefts detected-thefts + 1  ; global detection count
+      ]
+  ]
+  ask farmers [
+    if last-stolen > 0 [
+      set friendliness friendliness * 0.8  ; reduce trust
+      set social-credit social-credit * 0.8  ; reduce social credit
+    ]
+  ]
+
+  ask farmers [ set last-stolen 0 ]  ; reset for next tick
+end
+
+to check-theft-detection [ victim ]
+  let deviation ([predicted-water] of victim - [available-water] of victim)  ; how much water victim lost
+  let threshold 0.25 * [predicted-water] of victim  ; threshold for detecting theft
+  if deviation > threshold and random-float 1 < 0.5 [  ; check if theft is noticed (50% chance)
+    ask victim [
+      set last-stolen deviation  ; mark how much was stolen
+      set friendliness friendliness * 0.5  ; reduce trust due to theft
+      set social-credit 0  ; reset social credit after theft
+    ]
+    set detected-thefts detected-thefts + 1  ; increment global detected theft count
+  ]
+end
+
+
 
 to grow-crops
   let multiplier available-water / required-water ; quality multiplier based on water received
@@ -233,7 +319,7 @@ num-farmers
 num-farmers
 0
 33
-29.0
+30.0
 1
 1
 NIL
@@ -259,7 +345,7 @@ base-flow
 base-flow
 0
 500
-500.0
+30.0
 5
 1
 NIL
@@ -371,6 +457,25 @@ false
 "" ""
 PENS
 "Social credits" 1.0 0 -16777216 true "" "if any? farmers [ plotxy ticks mean [social-credit] of farmers ]"
+
+PLOT
+1200
+442
+1400
+592
+Thefts
+Ticks
+Amount
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"Total Thefts" 1.0 0 -13791810 true "" "plot total-thefts\n\n"
+"Detected Thefts" 1.0 0 -2674135 true "" "plot detected-thefts"
 
 @#$#@#$#@
 ## WHAT IS IT?
