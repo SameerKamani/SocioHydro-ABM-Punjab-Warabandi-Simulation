@@ -1,6 +1,14 @@
+;========================
+; GLOBALS AND BREEDS
+;========================
+
 breed [ farmers farmer ]
-farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness connections social-credit theft-history last-stolen my-turn? predicted-water]
-globals [ total-land farmer-order crop-water-req week season total-flow total-thefts detected-thefts ]
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness connections social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile]
+globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency]
+
+;========================
+; SETUP FUNCTIONS
+;========================
 
 to setup
   clear-all
@@ -12,17 +20,17 @@ to setup
   set detected-thefts 0
   set season "rabi"
   set total-flow base-flow
-  set crop-water-req [
-    0.6 0.6 0.6   ; requirement for rice: each stage lasts multiple weeks, hence the repeating values
-    0.8 0.8 0.8
-    1.5 1.5 1.5 1.5 1.5
-    0.5 0.5
-    0.3 0.3
-    0.5 0.5
-    1.1 1.1 1.1 1.1
-    0.2 0.2
-  ]
-  update-land
+  ; baseline values taken from https://www.mdpi.com/2077312 & https://link.springer.com/article/10.1007/s44279-025-00189-5
+  set rice-req   [0.7 0.9 1.0 1.2 1.3 1.3 1.2 1.1 1.0 0.9 0.8 0.7 0.6 0.5]
+  set cotton-req [0.6 0.7 0.8 1.0 1.1 1.1 1.0 0.9 0.8 0.7]
+  set wheat-req  [0.4 0.5 0.6 0.7 0.7 0.6 0.5 0.4]
+  set mustard-req [0.4 0.5 0.6 0.7 0.7 0.6 0.5 0.4]
+  set current-event "none"
+  set last-flood? false
+  set rainfall-factor 1.0
+  set growth-efficiency 1.0
+  assign-crops ; assign initial crops based on season
+  update-land ; mark farmland based on crop stage
 end
 
 to setup-patches
@@ -50,37 +58,132 @@ to setup-farmers
   ]
 end
 
+to assign-crops
+  ask farmers [
+    if season = "rabi" [
+      ifelse random-float 1 < 0.5 [
+        set crop-type "wheat"
+        set crop-water-profile wheat-req
+      ][
+        set crop-type "mustard"
+        set crop-water-profile mustard-req
+      ]
+    ]
+    if season = "kharif" [
+      ifelse random-float 1 < 0.5 [
+        set crop-type "rice"
+        set crop-water-profile rice-req
+      ][
+        set crop-type "cotton"
+        set crop-water-profile cotton-req
+      ]
+    ]
+    set crop-stage 0 ; initialize crop stage
+    set crop-quality 1 ; initialize crop quality
+  ]
+end
+
 to-report my-land
   report patches with [ pycor = [ycor] of myself and pxcor > 0 and pxcor <= [land-size] of myself ] ; update color of my farmland depending on crop stage
 end
 
 to update-land
-  ask farmers [ ask my-land [ set pcolor scale-color ([color] of myself) ([crop-stage] of myself) -10 (10 + length crop-water-req)]] ; mark my land based on how close to harvest
+  ask farmers [ ask my-land [ set pcolor scale-color ([color] of myself) ([crop-stage] of myself) -10 (10 + length [crop-water-profile] of myself)]] ; mark my land based on how close to harvest
 end
 
+;========================
+; GO / MAIN LOOP
+;========================
+
 to go
+  if ticks >= 520 [ stop ] ; simulation end after 520 ticks
   set week week + 1
-  if week > 26 [ set week 1 ]
-  update-season
-  update-water-flow
-  update-land
+  if week > 26 [ set week 1 ] ; reset week every 26
+  update-season ; switch crops if new season
+  check-environment ; decide flood/drought/heavy-rain
+  update-water-flow ; set water flow based on season and rainfall
+  apply-environment-effects ; apply crop damage from events
+  update-land ; update farmland color/stage
   allocate-water ; distribute water to farmers based on availability
   share-water ; farmers request/share water with their connections
-  attempt-theft
+  attempt-theft ; farmers attempt to steal water
   ask farmers [ grow-crops ] ; update crop growth and quality
   tick
 end
 
+;========================
+; ENVIRONMENT
+;========================
+
+to check-environment
+  set current-event "none"
+  set rainfall-factor 1.0
+  set growth-efficiency 1.0
+
+  let r random-float 1
+  if r < 0.03 [
+    set current-event "flood"
+    set rainfall-factor (1.5 + random-float 0.8) ; 1.5–2.3× flow
+    set growth-efficiency 0.8 ; waterlogging => less effective growth now
+  ]
+  if r >= 0.03 and r < 0.10 [
+    set current-event "heavy-rain"
+    set rainfall-factor (1.2 + random-float 0.5) ; 1.2–1.7× flow
+    set growth-efficiency 0.9 ; some waterlogging reduces effective growth
+  ]
+  if r >= 0.10 and r < 0.15 [
+    set current-event "drought"
+    set rainfall-factor (0.4 + (random-float 0.4)) ; 0.4–0.8× flow
+    set growth-efficiency 0.9 ; heat/drought stress may slightly lower efficiency
+    ask farmers [
+      set available-water available-water * rainfall-factor ; reduce water in drought
+    ]
+  ]
+end
+
+to apply-environment-effects
+  if current-event = "flood" [
+    ask farmers [
+      set crop-quality crop-quality * (0.5 + random-float 0.3)  ; 50–80% survival
+    ]
+    set last-flood? true
+  ]
+  if current-event = "heavy-rain" [
+    ask farmers [
+      set crop-quality crop-quality * (0.85 + random-float 0.05)  ; small reduction
+    ]
+  ]
+  if current-event = "drought" [
+    ask farmers [
+      set crop-quality crop-quality * (0.6 + random-float 0.2)  ; 60–80% of previous
+    ]
+  ]
+end
+
+;========================
+; WATER MANAGEMENT
+;========================
+
+to update-water-flow
+  let season-factor 1.0
+  if season = "kharif" [ set season-factor 1.4 ]
+  if season = "rabi"   [ set season-factor 0.6 ]
+  set total-flow base-flow * season-factor ; base flow * season factor
+  set total-flow total-flow * rainfall-factor ; apply rainfall/drought factor
+  set total-flow total-flow * (0.8 + random-float 0.4) ; random fluctuation
+  if total-flow < 0 [ set total-flow 0 ]
+end
+
 to set-farmer-water [ water-per-acre ]
   set available-water (land-size * water-per-acre) ; initial allocation based on land size
-  set required-water (land-size * (item crop-stage crop-water-req)) ; water needed for current crop stage
+  set required-water (land-size * (item crop-stage crop-water-profile)) ; water needed for current crop stage
 end
 
 to allocate-water
   let remaining-water total-flow ; total water available to distribute
   foreach farmer-order [
     f ->
-      let water-need ([land-size] of f * item [crop-stage] of f crop-water-req) ; water needed for this farmer's land & crop stage
+      let water-need ([land-size] of f * item ([crop-stage] of f) ([crop-water-profile] of f)) ; water needed for this farmer's land & crop stage
       let water-given min (list remaining-water water-need) ; cannot give more than remaining
       let farmer-pos position f farmer-order  ; index in farmer-order (0 = upstream)
       let loss-factor 1 - (0.05 * farmer-pos) ; kacha system loss based on upstream/downstream
@@ -93,7 +196,6 @@ to allocate-water
       set remaining-water remaining-water - water-given ; reduce water for next farmer
   ]
 end
-
 
 to share-water
   foreach farmer-order [
@@ -109,7 +211,6 @@ to share-water
                 let safe-social max list 0 [social-credit] of conn  ; ensure social-credit is non-negative
                 let share-prob ([friendliness] of conn) * (0.2 + donor-available / [required-water] of conn) * (1 + ln (1 + safe-social) / 5)  ; probability donor agrees, stronger influence than old version
                 set share-prob max list 0 (min list 1 share-prob)  ; cap between 0 and 1
-
                 if random-float 1 < share-prob [
                   let water-to-share min (list deficit donor-available (0.5 * donor-available))  ; max 50% of donor's water shared
                   set available-water available-water + water-to-share  ; recipient gains water
@@ -122,7 +223,6 @@ to share-water
                     if friendliness > 1 [ set friendliness 1 ]  ; cap friendliness at 1
                   ]
                 ]
-
                 if random-float 1 >= share-prob [
                   ask conn [
                     set friendliness friendliness - 0.05 * friendliness  ; donor slightly decreases friendliness if refused
@@ -134,18 +234,16 @@ to share-water
         ]
       ]
   ]
-
-  ask farmers [
-    set social-credit social-credit * 0.99  ; slow decay so changes persist
+  ask farmers [ set social-credit social-credit * 0.99  ; slow decay so changes persist
   ]
 end
 
-
-
+;========================
+; THEFT
+;========================
 
 to attempt-theft
   let thefts-tick []  ; collect all thefts this tick
-
   foreach farmer-order [
     thief ->
       ask thief [
@@ -162,7 +260,6 @@ to attempt-theft
             let upstream-factor 1 - (position thief farmer-order * 0.05)  ; upstream farmers less likely to steal
             let retaliation-factor ifelse-value ([last-stolen] of victim > 0) [0.5] [1]  ; reduce chance if victim was recently stolen
             let theft-prob base-prob * water-factor * social-factor * friend-factor * upstream-factor * retaliation-factor  ; final probability
-
             if random-float 1 < theft-prob [
               let stolen min list deficit (0.5 * [available-water] of victim)  ; thief can take up to 50% of victim’s water
               set available-water available-water + stolen  ; thief gains stolen water
@@ -177,7 +274,6 @@ to attempt-theft
         ]
       ]
   ]
-
   set total-thefts total-thefts + length thefts-tick  ; update global theft count
   foreach thefts-tick [
     t ->
@@ -201,7 +297,6 @@ to attempt-theft
       set social-credit social-credit * 0.8  ; reduce social credit
     ]
   ]
-
   ask farmers [ set last-stolen 0 ]  ; reset for next tick
 end
 
@@ -218,35 +313,50 @@ to check-theft-detection [ victim ]
   ]
 end
 
-
+;========================
+; GROWTH & CROP
+;========================
 
 to grow-crops
-  let multiplier available-water / required-water ; quality multiplier based on water received
-  set multiplier max (list 0.8 (min (list multiplier 1.2))) ; clamp multiplier
-  set crop-quality (multiplier * crop-quality) ; update crop quality
-  set crop-stage (crop-stage + 1) ; advance crop stage
-  if (crop-stage > 22) [
-    set wealth (wealth + (crop-quality * land-size)) ; gain wealth from harvest
-    set crop-stage 0
-    set crop-quality 1
+  let multiplier (available-water / required-water) * growth-efficiency  ; calculate growth multiplier based on water & global growth factor
+  set multiplier max (list 0.8 (min list multiplier 1.2))  ; clamp multiplier to prevent extreme growth/decay
+  set crop-quality crop-quality * multiplier  ; update crop quality based on water received and growth efficiency
+  set crop-stage crop-stage + 1  ; advance crop stage
+  if crop-stage >= length crop-water-profile [  ; check if crop reached final stage
+    set wealth wealth + (crop-quality * land-size)  ; harvest: wealth gain proportional to quality & land
+    set crop-stage 0  ; reset crop stage for next planting
+    set crop-quality 1  ; reset crop quality to baseline
   ]
 end
 
 to update-season
-  if week = 1 [
-    ifelse season = "rabi" [set season "kharif"][set season "rabi"] ; switch season every 26 weeks
+  if week = 1 [  ; every 26 weeks, switch season
+    ifelse season = "rabi" [set season "kharif"][set season "rabi"]  ; toggle season
+    ask farmers [
+      if season = "rabi" [
+        ifelse random-float 1 < 0.5 [
+          set crop-type "wheat"  ; assign wheat randomly
+          set crop-water-profile wheat-req  ; set corresponding water profile
+        ][
+          set crop-type "mustard"  ; assign mustard otherwise
+          set crop-water-profile mustard-req
+        ]
+      ]
+      if season = "kharif" [
+        ifelse random-float 1 < 0.5 [
+          set crop-type "rice"  ; assign rice randomly
+          set crop-water-profile rice-req
+        ][
+          set crop-type "cotton"  ; assign cotton otherwise
+          set crop-water-profile cotton-req
+        ]
+      ]
+      set crop-stage 0  ; reset crop stage for new season
+      set crop-quality 1  ; reset crop quality
+      if last-flood? [set crop-quality crop-quality * 1.1]  ; apply flood fertility bonus if last season had flood
+    ]
+    set last-flood? false  ; clear flood flag after applying bonus
   ]
-end
-
-to update-water-flow
-  if season = "kharif" [
-    set total-flow base-flow * 1.4 ; more water in kharif
-  ]
-  if season = "rabi" [
-    set total-flow base-flow * 0.6 ; less water in rabi
-  ]
-  set total-flow total-flow * (0.8 + random-float 0.4)  ; introduce fluctuation
-  if total-flow < 0 [ set total-flow 0 ]
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -345,7 +455,7 @@ base-flow
 base-flow
 0
 500
-30.0
+40.0
 5
 1
 NIL
