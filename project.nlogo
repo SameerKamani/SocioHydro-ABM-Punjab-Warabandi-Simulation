@@ -10,7 +10,9 @@ breed [ farmers farmer ]
 farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile]
 undirected-link-breed [ friendships friendship ]
 friendships-own [ water-a-to-b-balance strength ]
-globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades]
+directed-link-breed [ thefts theft ]
+thefts-own [ amount-stolen ]
+globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades trade-volume theft-volume ]
 
 ;========================
 ; SETUP FUNCTIONS
@@ -25,7 +27,9 @@ to setup
   setup-friendships
   set week 1
   set total-trades 0
+  set trade-volume 0
   set total-thefts 0
+  set theft-volume 0
   set detected-thefts 0
   set season "rabi"
   set total-flow base-flow
@@ -151,6 +155,7 @@ to go
   allocate-water ; distribute water to farmers based on availability
   share-water ; farmers request/share water with their connections
   attempt-theft ; farmers attempt to steal water
+  update-theft-links ; visualise theft amounts
   ask farmers [ grow-crops ] ; update crop growth and quality
   tick
 end
@@ -268,9 +273,9 @@ to share-water
 
             ;; logistic acceptance probability -> each parameter normalised to -1 to 1
             let accept-factor (
-              base-accept              + ;; don't give water if no real need
+              base-share              + ;; don't give water if no real need
               w_f * 2 * (f - 0.5)            +   ;; friendly farmers give more
-              w_s * 2 * (str - 0.5)        +   ;; strong friendship
+              w_str * 2 * (str - 0.5)        +   ;; strong friendship
               w_bal * bal        +   ;; positive trade history
               w_sc * 0.1 * sc         +   ;; high-social-credit requester
               w_def * 1 * (deficit / [required-water] of myself) ;; urgent need
@@ -300,6 +305,7 @@ to share-water
                 set strength min(list 1 (strength + 0.1))
                 set color scale-color red (abs water-a-to-b-balance) 1 0
                 set total-trades (total-trades + 1)
+                set trade-volume trade-volume + amount
               ]
               set social-credit (social-credit + 0.1 * sc)
             ]
@@ -322,14 +328,155 @@ end
 ; THEFT
 ;========================
 
+;========================
+; THEFT (new version)
+;========================
+
 to attempt-theft
+  let thefts-this-tick []
+
+  ;; each farmer can attempt up to 3 thefts in one tick
+  foreach farmer-order [
+    thief ->
+    ask thief [
+
+      let remaining-deficit required-water - available-water
+      if remaining-deficit <= 0 [ stop ]
+
+      ;; pick possible victims (e.g. downstream)
+      let candidates other farmers with [ pycor > [pycor] of thief ]
+      if not any? candidates [ stop ]
+
+      ;; sort by: high water, low social credit, weak ties (easier to steal from)
+      let sorted-targets sort-by [ [a b] -> (heuristic-value self a) > (heuristic-value self b) ] candidates
+
+
+      ;; thief can try up to 3 different victims
+      let tries 0
+
+      while [tries < 3 and remaining-deficit > 0 and (length sorted-targets) > 0] [
+
+        let victim first sorted-targets
+        set sorted-targets but-first sorted-targets
+        set tries tries + 1
+
+        ;; --- Compute theft probability ------------------------
+
+        let deficit-ratio remaining-deficit / required-water ; would steal if i have more deficit
+        let victim-water [available-water] of victim ; more likely to steal if other person has a lot of water
+        let friendly-thief friendliness ; wouldn't want to steal if i am friendly
+        let sc-thief social-credit ; wouldn't wat to steal if i have people's respect -> won't want to harm image
+        let sc-victim [social-credit] of victim ; would be more likely to steal from people with less social credit
+        let victim-wealth [ wealth ] of victim ; less likely to steal from rich as they can take legal action - ignore for now
+        let str 0
+        if (friendship-neighbor? victim) [set str [strength] of friendship (who) ([who] of victim)]
+
+        ;; retaliation: if victim was recently stolen
+        ; let retaliation (ifelse-value ([last-stolen] of victim > 0) [0.5] [1])
+
+        ;; FEATURES → logistic acceptance P(theft)
+        let x (
+          base-theft +
+          theft_w_def   * deficit-ratio +                      ; my deficit
+          theft_w_vwater * (victim-water / 10) +
+          theft_w_f     * (-2 * (friendly-thief - 0.5)) +       ; my friendliness
+          theft_w_sc    * (- sc-thief / 10) +
+          theft_w_vsc    * (- sc-victim / 10) +          ; low social-credit victim easier
+          theft_w_str   * (- str)                           ; less likely to steal from friends
+          ; w_ret   * retaliation
+        )
+
+        let p-steal 1 / (1 + exp (- x))
+
+        ;; --- Attempt theft -------------------------------------
+        if random-float 1 < p-steal [
+
+          ;; amount: min of deficit and upto 20% of victim water
+          let amount min (list remaining-deficit ((random-float 0.2) * victim-water))
+
+          if amount > 0 [
+
+            ;; thief gets water
+            set available-water available-water + amount
+            set social-credit social-credit - 0.05   ;; slight penalty
+            set friendliness friendliness * 0.97     ;; becomes slightly less kind
+
+            ;; victim loses water
+            ask victim [
+              set available-water available-water - amount
+            ]
+
+            ;; update friendship tie
+            if (friendship-neighbor? victim) [
+              ask (friendship (who) ([who] of victim)) [ set strength 0.8 * strength ]
+            ]
+
+            ;; record theft
+            set total-thefts total-thefts + 1
+            set theft-volume theft-volume + amount
+            if (not theft-neighbor? victim) [ create-theft-to victim [ set amount-stolen 0 ] ]
+            ask theft who ([who] of victim) [ set amount-stolen (amount-stolen + amount) ]
+            set thefts-this-tick lput (list thief victim amount) thefts-this-tick
+
+            ;; update remaining deficit
+            set remaining-deficit required-water - available-water
+          ]
+        ]
+      ]
+    ]
+  ]
+end
+
+to detect2
+  ;; --- Detection phase ---------------------------------------
+  let thefts-this-tick [] ; remove line
+  foreach thefts-this-tick [
+    t ->
+      let thief first t
+      let victim item 1 t
+      let stolen item 2 t
+      let predicted [predicted-water] of victim
+      let actual [available-water] of victim
+
+      ;; strong deviation indicates likely theft
+      let deviation predicted - actual
+      let threshold 0.25 * predicted
+
+      if deviation > threshold and random-float 1 < 0.7 [
+        ask victim [
+          set last-stolen deviation
+          set friendliness friendliness * 0.6
+          set social-credit 0
+        ]
+        set detected-thefts detected-thefts + 1
+      ]
+  ]
+
+  ;; post-detection penalty to victims
+  ask farmers [
+    if last-stolen > 0 [
+      set friendliness friendliness * 0.8
+      set social-credit social-credit * 0.8
+    ]
+    set last-stolen 0
+  ]
+end
+
+to update-theft-links
+  ask thefts [
+    if (amount-stolen > 0) [ set color red]
+  ]
+end
+;;;;;;;;dadadad
+
+to attempt-theft2
   let thefts-tick []  ; collect all thefts this tick
   foreach farmer-order [
     thief ->
       ask thief [
         let deficit required-water - available-water  ; how much water thief still needs
         if deficit > 0 [
-          let possible-targets other farmers with [ pxcor > [pxcor] of thief ]  ; only downstream farmers
+          let possible-targets other farmers with [ pycor > [pycor] of thief ]  ; only downstream farmers
           if any? possible-targets [
             let sorted-targets sort-by [[a b] -> (([available-water] of a + [social-credit] of a) > ([available-water] of b + [social-credit] of b))] possible-targets  ; prioritize richer/creditworthy targets
             let victim first sorted-targets  ; choose first as victim
@@ -380,7 +527,7 @@ to attempt-theft
   ask farmers [ set last-stolen 0 ]  ; reset for next tick
 end
 
-to check-theft-detection [ victim ]
+to check-theft-detection2 [ victim ]
   let deviation ([predicted-water] of victim - [available-water] of victim)  ; how much water victim lost
   let threshold 0.25 * [predicted-water] of victim  ; threshold for detecting theft
   if deviation > threshold and random-float 1 < 0.5 [  ; check if theft is noticed (50% chance)
@@ -443,6 +590,18 @@ end
 ;========================
 ; Helpers
 ;========================
+
+to-report heuristic-value [me target]
+  let w [available-water] of target
+  let sc [social-credit] of target
+  let str 0
+
+  if [friendship-neighbor? target] of me [
+    set str [strength] of (friendship ([who] of me) ([who] of target))
+  ]
+
+  report w - 0.5 * (sc / 10) - 0.3 * str
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 438
@@ -736,8 +895,8 @@ SLIDER
 584
 220
 617
-w_s
-w_s
+w_str
+w_str
 0
 3
 2.0
@@ -781,8 +940,8 @@ SLIDER
 499
 221
 532
-base-accept
-base-accept
+base-share
+base-share
 -5
 5
 3.0
@@ -792,12 +951,150 @@ NIL
 HORIZONTAL
 
 MONITOR
-73
-238
-156
-283
+39
+234
+122
+279
 NIL
 total-trades
+17
+1
+11
+
+MONITOR
+33
+287
+128
+332
+NIL
+trade-volume
+17
+1
+11
+
+SLIDER
+296
+718
+468
+751
+theft_w_def
+theft_w_def
+0
+3
+1.5
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+297
+531
+469
+564
+theft_w_vwater
+theft_w_vwater
+0
+3
+1.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+298
+495
+470
+528
+base-theft
+base-theft
+-20
+20
+-7.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+298
+568
+470
+601
+theft_w_f
+theft_w_f
+0
+3
+1.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+297
+642
+469
+675
+theft_w_sc
+theft_w_sc
+0
+3
+2.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+296
+680
+468
+713
+theft_w_vsc
+theft_w_vsc
+0
+3
+2.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+296
+605
+468
+638
+theft_w_str
+theft_w_str
+0
+3
+2.0
+0.1
+1
+NIL
+HORIZONTAL
+
+MONITOR
+223
+233
+303
+278
+NIL
+total-thefts
+17
+1
+11
+
+MONITOR
+218
+291
+310
+336
+NIL
+theft-volume
 17
 1
 11
