@@ -128,7 +128,7 @@ to assign-crops
         set crop-water-profile cotton-req
       ]
     ]
-    set crop-stage 0 ; initialize crop stage
+    set crop-stage ((random (crop-stage-variance + 1)) - crop-stage-variance); initialize crop stage -> some will be further ahead, some further behind
     set crop-quality 1 ; initialize crop quality
   ]
 end
@@ -230,7 +230,18 @@ end
 to allocate-water
   let water-per-acre total-flow / total-land; total water available to distribute
   ask farmers [
-    set required-water land-size * item crop-stage crop-water-profile ; water needed for this farmer's land & crop stage
+    ifelse crop-stage < 0 [ set required-water 0 ] ; not growing yet, will start later
+    [
+      ifelse 1 + crop-stage >= length crop-water-profile [ set required-water 0 ] ; done harvesting, don't need water
+      [
+        let idx1 int crop-stage
+        let idx2 idx1 + 1
+        let wei crop-stage - idx1
+        let w-req (wei * item idx2 crop-water-profile) + ((1 - wei) * item idx1 crop-water-profile)
+        set required-water land-size * w-req ; water needed for this farmer's land & crop stage -> interpolate according to the stages i am in between
+      ]
+    ]
+    ;set required-water land-size * item crop-stage crop-water-profile
     let loss-factor 1 - (0.01 * ycor); more loss further downstream -> higher ycor. for 32 pos, 32% water loss
     set available-water land-size * water-per-acre * (loss-factor + random-float water-randomness) ; get water as per land (and loss w/ some randomness)
     set predicted-water available-water ; I expect to receive as much as allocated
@@ -455,7 +466,7 @@ to detect-thefts
       set detected-thefts detected-thefts + count thieves
       ifelse count thieves != 0
       [ set suspicion-threshold max(list 0.02 (suspicion-threshold - (0.01 * count thieves))) ] ; if there are thieves, my threshold reduces
-      [ set suspicion-threshold min(list 0.5 (suspicion-threshold + 0.03)) ] ; if there are no thieves, my threshold rises
+      [ set suspicion-threshold min(list 0.5 (suspicion-threshold + 0.01)) ] ; if there are no thieves, my threshold rises
 
       ask thieves [
         ask end2 [ set available-water available-water + [amount-stolen] of myself ]
@@ -480,14 +491,17 @@ end
 ;========================
 
 to grow-crops
+  if 1 + crop-stage >= length crop-water-profile [ stop ] ; done with crops for this season
+  if crop-stage < 0 [  ; haven't started growing for this season
+    set crop-stage crop-stage + 1
+    stop
+  ]
   let multiplier (available-water / required-water) * growth-efficiency  ; calculate growth multiplier based on water & global growth factor
   set multiplier max (list 0.8 (min list multiplier 1.2))  ; clamp multiplier to prevent extreme growth/decay
   set crop-quality crop-quality * multiplier  ; update crop quality based on water received and growth efficiency
-  set crop-stage crop-stage + 1  ; advance crop stage
-  if crop-stage >= length crop-water-profile [  ; check if crop reached final stage
-    set wealth wealth + (crop-quality * land-size)  ; harvest: wealth gain proportional to quality & land
-    set crop-stage 0  ; reset crop stage for next planting
-    set crop-quality 1  ; reset crop quality to baseline
+  set crop-stage crop-stage + multiplier  ; advance crop stage -> based on how much water given
+  if 1 + crop-stage >= length crop-water-profile [  ; check if crop reached final stage
+    set wealth wealth + (crop-quality * land-size)  ; harvest: wealth gain proportional to quality & land -> then wait till next season
   ]
 end
 
@@ -513,7 +527,7 @@ to update-season
           set crop-water-profile cotton-req
         ]
       ]
-      set crop-stage 0  ; reset crop stage for new season
+      set crop-stage ((random (crop-stage-variance + 1)) - (crop-stage-variance))  ; reset crop stage for new season -> some may start upto 5 weeks later
       set crop-quality 1  ; reset crop quality
       if last-flood? [set crop-quality crop-quality * 1.1]  ; apply flood fertility bonus if last season had flood
     ]
@@ -649,14 +663,14 @@ Water Required
 NIL
 NIL
 0.0
-10.0
+1.0
 0.0
 10.0
 true
 false
 "" ""
 PENS
-"default" 1.0 1 -13840069 true "" "histogram [required-water] of farmers"
+"default" 0.1 1 -13840069 true "" "histogram [required-water / land-size] of farmers"
 
 PLOT
 1096
@@ -1092,6 +1106,21 @@ total-theft-checks
 17
 1
 11
+
+SLIDER
+259
+169
+433
+202
+crop-stage-variance
+crop-stage-variance
+0
+10
+4.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
