@@ -7,12 +7,12 @@
 ;========================
 
 breed [ farmers farmer ]
-farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile]
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile shared-now stolen-now suspicion-threshold ]
 undirected-link-breed [ friendships friendship ]
 friendships-own [ water-a-to-b-balance strength ]
 directed-link-breed [ thefts theft ]
 thefts-own [ amount-stolen ]
-globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades trade-volume theft-volume ]
+globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades trade-volume theft-volume total-theft-checks ]
 
 ;========================
 ; SETUP FUNCTIONS
@@ -30,6 +30,7 @@ to setup
   set trade-volume 0
   set total-thefts 0
   set theft-volume 0
+  set total-theft-checks 0
   set detected-thefts 0
   set season "rabi"
   set total-flow base-flow
@@ -55,8 +56,9 @@ to setup-farmers
   set farmer-order []
   create-farmers num-farmers [
     set shape "person farmer" ; agent is a farmer
-    set land-size min(list 31 max(list 3 int exp (random-normal 1.5 0.8))) ; give random amount of land
+    set land-size min(list 29 max(list 3 int exp (random-normal 1.5 0.8))) ; give random amount of land
     set social-credit ln(land-size + 1) + random-float 0.5 ; my social standing depends on how much land I have
+    set suspicion-threshold (0.05 + random-float 0.2) ; 0.05 -> 0.25
     ;set land-size max(list 3 int (random-normal 10 5)) ; give random amount of land
     ;set crop-stage random 5 ; crop stage is between 0 - 4 initially
     ;set crop-quality 0.8 + (random-float 0.4) ; crop quality is between 0.8 - 1.2 initially
@@ -145,6 +147,7 @@ end
 
 to go
   if ticks >= 520 [ stop ] ; simulation end after 520 ticks
+  delete-thefts ; clear from this tick
   set week week + 1
   if week > 26 [ set week 1 ] ; reset week every 26
   update-season ; switch crops if new season
@@ -156,6 +159,7 @@ to go
   share-water ; farmers request/share water with their connections
   attempt-theft ; farmers attempt to steal water
   update-theft-links ; visualise theft amounts
+  detect-thefts ; check for thefts
   ask farmers [ grow-crops ] ; update crop growth and quality
   tick
 end
@@ -228,12 +232,13 @@ to allocate-water
   ask farmers [
     set required-water land-size * item crop-stage crop-water-profile ; water needed for this farmer's land & crop stage
     let loss-factor 1 - (0.01 * ycor); more loss further downstream -> higher ycor. for 32 pos, 32% water loss
-    set available-water land-size * water-per-acre * (loss-factor + random-float 0.05) ; get water as per land (and loss w/ some randomness)
+    set available-water land-size * water-per-acre * (loss-factor + random-float water-randomness) ; get water as per land (and loss w/ some randomness)
     set predicted-water available-water ; I expect to receive as much as allocated
   ]
 end
 
 to share-water
+  ask farmers [ set shared-now 0 ]
   ask farmers [
     let deficit required-water - available-water
     if deficit <= 0 [ stop ]   ;; skip if no need
@@ -291,10 +296,12 @@ to share-water
 
               ;; donor gives
               set available-water available-water - amount
+              set shared-now shared-now + amount
 
               ;; requester receives
               ask myself [
                 set available-water available-water + amount
+                set shared-now shared-now - amount
               ]
 
               ;; update friendship
@@ -322,18 +329,13 @@ to share-water
   ]
 end
 
-
-
 ;========================
 ; THEFT
 ;========================
 
-;========================
-; THEFT (new version)
-;========================
-
 to attempt-theft
-  let thefts-this-tick []
+  ; let thefts-this-tick []
+  ask farmers [ set stolen-now 0 ]
 
   ;; each farmer can attempt up to 3 thefts in one tick
   foreach farmer-order [
@@ -398,12 +400,14 @@ to attempt-theft
 
             ;; thief gets water
             set available-water available-water + amount
+            set stolen-now stolen-now + amount
             set social-credit social-credit - 0.05   ;; slight penalty
             set friendliness friendliness * 0.97     ;; becomes slightly less kind
 
             ;; victim loses water
             ask victim [
               set available-water available-water - amount
+              set stolen-now stolen-now - amount
             ]
 
             ;; update friendship tie
@@ -416,7 +420,7 @@ to attempt-theft
             set theft-volume theft-volume + amount
             if (not theft-neighbor? victim) [ create-theft-to victim [ set amount-stolen 0 ] ]
             ask theft who ([who] of victim) [ set amount-stolen (amount-stolen + amount) ]
-            set thefts-this-tick lput (list thief victim amount) thefts-this-tick
+            ;set thefts-this-tick lput (list thief victim amount) thefts-this-tick
 
             ;; update remaining deficit
             set remaining-deficit required-water - available-water
@@ -427,118 +431,49 @@ to attempt-theft
   ]
 end
 
-to detect2
-  ;; --- Detection phase ---------------------------------------
-  let thefts-this-tick [] ; remove line
-  foreach thefts-this-tick [
-    t ->
-      let thief first t
-      let victim item 1 t
-      let stolen item 2 t
-      let predicted [predicted-water] of victim
-      let actual [available-water] of victim
-
-      ;; strong deviation indicates likely theft
-      let deviation predicted - actual
-      let threshold 0.25 * predicted
-
-      if deviation > threshold and random-float 1 < 0.7 [
-        ask victim [
-          set last-stolen deviation
-          set friendliness friendliness * 0.6
-          set social-credit 0
-        ]
-        set detected-thefts detected-thefts + 1
-      ]
-  ]
-
-  ;; post-detection penalty to victims
-  ask farmers [
-    if last-stolen > 0 [
-      set friendliness friendliness * 0.8
-      set social-credit social-credit * 0.8
-    ]
-    set last-stolen 0
-  ]
-end
-
 to update-theft-links
   ask thefts [
     if (amount-stolen > 0) [ set color red]
   ]
 end
-;;;;;;;;dadadad
 
-to attempt-theft2
-  let thefts-tick []  ; collect all thefts this tick
-  foreach farmer-order [
-    thief ->
-      ask thief [
-        let deficit required-water - available-water  ; how much water thief still needs
-        if deficit > 0 [
-          let possible-targets other farmers with [ pycor > [pycor] of thief ]  ; only downstream farmers
-          if any? possible-targets [
-            let sorted-targets sort-by [[a b] -> (([available-water] of a + [social-credit] of a) > ([available-water] of b + [social-credit] of b))] possible-targets  ; prioritize richer/creditworthy targets
-            let victim first sorted-targets  ; choose first as victim
-            let base-prob 0.2  ; base probability of attempting theft
-            let water-factor min list 1 (deficit / required-water)  ; more deficit -> higher probability
-            let social-factor 1 - ([social-credit] of victim / 10)  ; victim’s social credit reduces theft chance
-            let friend-factor 1 - [friendliness] of victim  ; friendly victims are harder to steal from
-            let upstream-factor 1 - (position thief farmer-order * 0.05)  ; upstream farmers less likely to steal
-            let retaliation-factor ifelse-value ([last-stolen] of victim > 0) [0.5] [1]  ; reduce chance if victim was recently stolen
-            let theft-prob base-prob * water-factor * social-factor * friend-factor * upstream-factor * retaliation-factor  ; final probability
-            if random-float 1 < theft-prob [
-              let stolen min list deficit (0.5 * [available-water] of victim)  ; thief can take up to 50% of victim’s water
-              set available-water available-water + stolen  ; thief gains stolen water
-              set social-credit social-credit - 0.1  ; penalty for thief
-              ask victim [
-                set available-water available-water - stolen  ; victim loses water
-                set friendliness friendliness - 0.2  ; victim trust decreases
-              ]
-              set thefts-tick lput (list thief victim stolen) thefts-tick  ; record theft
-            ]
-          ]
-        ]
-      ]
-  ]
-  set total-thefts total-thefts + length thefts-tick  ; update global theft count
-  foreach thefts-tick [
-    t ->
-      let thief first t
-      let victim item 1 t
-      let stolen item 2 t
-      let deviation ([predicted-water] of victim - [available-water] of victim)  ; how much water missing
-      let threshold 0.25 * [predicted-water] of victim  ; detection threshold
-      if deviation > threshold and random-float 1 < 0.7 [
-        ask victim [
-          set last-stolen deviation  ; mark theft
-          set friendliness friendliness * 0.6  ; reduce trust strongly
-          set social-credit 0  ; reset social credit
-        ]
-        set detected-thefts detected-thefts + 1  ; global detection count
-      ]
-  ]
+to detect-thefts
   ask farmers [
-    if last-stolen > 0 [
-      set friendliness friendliness * 0.8  ; reduce trust
-      set social-credit social-credit * 0.8  ; reduce social credit
+    let my-water available-water / land-size ; what is my ratio of water to land
+
+    ; what is my friends ratio of water to land
+    let f1 one-of friendship-neighbors with [ ycor < [ycor] of myself ]
+    if f1 = nobody [ stop ]
+    let est-water [ available-water ] of f1 / [ land-size ] of f1
+
+    if (my-water / est-water) <  (1 - suspicion-threshold) ; if i have suspiciously less water -> I check for thieves, costing me money and friendliness but catching all thefts
+    [
+      set total-theft-checks total-theft-checks + 1
+      set friendliness (friendliness * 0.9)
+      ; set wealth wealth - 10
+      let thieves my-in-thefts
+      set detected-thefts detected-thefts + count thieves
+      ifelse count thieves != 0
+      [ set suspicion-threshold max(list 0.02 (suspicion-threshold - (0.01 * count thieves))) ] ; if there are thieves, my threshold reduces
+      [ set suspicion-threshold min(list 0.5 (suspicion-threshold + 0.03)) ] ; if there are no thieves, my threshold rises
+
+      ask thieves [
+        ask end2 [ set available-water available-water + [amount-stolen] of myself ]
+        ask end1 [
+          set available-water available-water - [amount-stolen] of myself
+          set social-credit max(list -10 (social-credit - 0.1 * [social-credit] of [end1] of myself))
+        ]
+        set color green
+      ]
     ]
   ]
-  ask farmers [ set last-stolen 0 ]  ; reset for next tick
 end
 
-to check-theft-detection2 [ victim ]
-  let deviation ([predicted-water] of victim - [available-water] of victim)  ; how much water victim lost
-  let threshold 0.25 * [predicted-water] of victim  ; threshold for detecting theft
-  if deviation > threshold and random-float 1 < 0.5 [  ; check if theft is noticed (50% chance)
-    ask victim [
-      set last-stolen deviation  ; mark how much was stolen
-      set friendliness friendliness * 0.5  ; reduce trust due to theft
-      set social-credit 0  ; reset social credit after theft
-    ]
-    set detected-thefts detected-thefts + 1  ; increment global detected theft count
-  ]
+to delete-thefts
+  wait 0.1
+  ask thefts [ die ]
 end
+
 
 ;========================
 ; GROWTH & CROP
@@ -604,13 +539,13 @@ to-report heuristic-value [me target]
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
-438
-14
-875
-452
+487
+13
+1072
+599
 -1
 -1
-13.0
+17.5
 1
 10
 1
@@ -706,10 +641,10 @@ NIL
 HORIZONTAL
 
 PLOT
-916
-19
-1138
-191
+1095
+12
+1317
+184
 Water Required
 NIL
 NIL
@@ -724,10 +659,10 @@ PENS
 "default" 1.0 1 -13840069 true "" "histogram [required-water] of farmers"
 
 PLOT
-917
-223
-1148
-390
+1096
+216
+1327
+383
 Crop Quality
 NIL
 NIL
@@ -759,10 +694,10 @@ NIL
 1
 
 PLOT
-913
-430
-1153
-609
+1092
+423
+1332
+602
 Water Incoming
 Ticks
 Water Inflow
@@ -777,10 +712,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "plot total-flow"
 
 PLOT
-1184
-20
-1384
-170
+1363
+13
+1563
+163
 Friendliness of Farmers
 Ticks
 Value
@@ -795,10 +730,10 @@ PENS
 "Friendliness" 1.0 0 -8330359 true "" "if any? farmers [plot mean [friendliness] of farmers]"
 
 PLOT
-1195
-228
-1395
-378
+1374
+221
+1574
+371
 Social Credits of Farmers
 NIL
 NIL
@@ -813,10 +748,10 @@ PENS
 "Social credits" 1.0 0 -16777216 true "" "if any? farmers [ plotxy ticks mean [social-credit] of farmers ]"
 
 PLOT
-1200
-442
-1400
-592
+1379
+435
+1579
+585
 Thefts
 Ticks
 Amount
@@ -832,21 +767,21 @@ PENS
 "Detected Thefts" 1.0 0 -2674135 true "" "plot detected-thefts"
 
 MONITOR
-36
-168
-234
-213
+20
+230
+151
+275
 friendship strength
 mean [strength] of friendships
-17
+5
 1
 11
 
 PLOT
-1448
-139
-1734
-500
+1606
+133
+1892
+494
 Friendship Balance
 NIL
 NIL
@@ -951,10 +886,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-39
-234
-122
-279
+37
+289
+120
+334
 NIL
 total-trades
 17
@@ -962,13 +897,13 @@ total-trades
 11
 
 MONITOR
-33
-287
-128
-332
+31
+342
+126
+387
 NIL
 trade-volume
-17
+5
 1
 11
 
@@ -1078,10 +1013,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-223
-233
-303
-278
+195
+232
+275
+277
 NIL
 total-thefts
 17
@@ -1089,12 +1024,71 @@ total-thefts
 11
 
 MONITOR
-218
-291
-310
-336
+230
+285
+322
+330
 NIL
 theft-volume
+5
+1
+11
+
+MONITOR
+227
+341
+331
+386
+NIL
+detected-thefts
+17
+1
+11
+
+MONITOR
+230
+396
+331
+441
+sus-threshold
+mean [suspicion-threshold] of farmers
+5
+1
+11
+
+SLIDER
+48
+165
+227
+198
+water-randomness
+water-randomness
+0
+1
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
+MONITOR
+37
+400
+120
+445
+friendliness
+mean [friendliness] of farmers
+5
+1
+11
+
+MONITOR
+287
+233
+392
+278
+NIL
+total-theft-checks
 17
 1
 11
