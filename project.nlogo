@@ -7,7 +7,9 @@
 ;========================
 
 breed [ farmers farmer ]
-farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile shared-now stolen-now suspicion-threshold ]
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile shared-now stolen-now suspicion-threshold
+              seed-cost maintenance-cost harvest-price total-cost revenue profit ] ; added crop economic variables
+
 undirected-link-breed [ friendships friendship ]
 friendships-own [ water-a-to-b-balance strength ]
 directed-link-breed [ thefts theft ]
@@ -45,6 +47,7 @@ to setup
   set growth-efficiency 1.0
   assign-crops ; assign initial crops based on season
   update-land ; mark farmland based on crop stage
+
 end
 
 to setup-patches
@@ -67,6 +70,7 @@ to setup-farmers
     set farmer-order lput self farmer-order ; create ordering of farmers from bottom to top
     set friendliness random-float 1; initial friendliness for social sharing
     set theft-history []
+    set wealth land-size * 20000
   ]
 
 end
@@ -114,24 +118,41 @@ to assign-crops
       ifelse random-float 1 < 0.5 [
         set crop-type "wheat"
         set crop-water-profile wheat-req
+        set seed-cost wheat-seed-cost + random-float (0.3 * wheat-seed-cost) ; User defined global + randomness
+        set maintenance-cost global-maintenance-cost + random-float 1000 ; Use general maintenance slider
+        set harvest-price wheat-price ; User defined global
       ][
         set crop-type "mustard"
         set crop-water-profile mustard-req
+        set seed-cost mustard-seed-cost + random-float (0.1 * mustard-seed-cost)
+        set maintenance-cost global-maintenance-cost + random-float 500
+        set harvest-price mustard-price ; User defined global
       ]
     ]
     if season = "kharif" [
       ifelse random-float 1 < 0.5 [
         set crop-type "rice"
         set crop-water-profile rice-req
+        set seed-cost rice-seed-cost + random-float (0.2 * rice-seed-cost)
+        set maintenance-cost global-maintenance-cost + random-float 2000
+        set harvest-price rice-price ; User defined global
       ][
         set crop-type "cotton"
         set crop-water-profile cotton-req
+        set seed-cost cotton-seed-cost + random-float (0.2 * cotton-seed-cost)
+        set maintenance-cost global-maintenance-cost + random-float 3000
+        set harvest-price cotton-price ; User defined global
       ]
     ]
-    set crop-stage ((random (crop-stage-variance + 1)) - crop-stage-variance); initialize crop stage -> some will be further ahead, some further behind
+    set total-cost seed-cost + maintenance-cost ; total crop cost
+    set wealth wealth - total-cost ; deduct cost at start of season
+    set crop-stage ((random (crop-stage-variance + 1)) - crop-stage-variance) ; initialize crop stage -> some will be further ahead, some further behind
     set crop-quality 1 ; initialize crop quality
+    set revenue 0 ; reset revenue
+    set profit 0 ; reset profit
   ]
 end
+
 
 to-report my-land
   report patches with [ pycor = [ycor] of myself and pxcor > 0 and pxcor <= [land-size] of myself ] ; update color of my farmland depending on crop stage
@@ -156,6 +177,7 @@ to go
   apply-environment-effects ; apply crop damage from events
   update-land ; update farmland color/stage
   allocate-water ; distribute water to farmers based on availability
+  deduct-weekly-water-fees
   share-water ; farmers request/share water with their connections
   attempt-theft ; farmers attempt to steal water
   update-theft-links ; visualise theft amounts
@@ -239,6 +261,14 @@ to allocate-water
         let wei crop-stage - idx1
         let w-req (wei * item idx2 crop-water-profile) + ((1 - wei) * item idx1 crop-water-profile)
         set required-water land-size * w-req ; water needed for this farmer's land & crop stage -> interpolate according to the stages i am in between
+
+        ; --- optional: cap max water per crop type ---
+        let max-water 0
+        if crop-type = "rice" [ set max-water 5 ]       ; acre-feet per acre
+        if crop-type = "wheat" [ set max-water 1.2 ]
+        if crop-type = "cotton" [ set max-water 3.5 ]
+        if crop-type = "mustard" [ set max-water 3 ]
+        if required-water > max-water * land-size [ set required-water max-water * land-size ]
       ]
     ]
     ;set required-water land-size * item crop-stage crop-water-profile
@@ -248,19 +278,69 @@ to allocate-water
   ]
 end
 
+to deduct-weekly-water-fees
+  ; total available-water (allocated water) is billed weekly
+  ask farmers [
+    ; Assuming 'base-water-cost-per-unit' is a user-defined Global Slider
+    let cost available-water * base-water-cost-per-unit
+    set wealth wealth - cost
+  ]
+end
+
 to share-water
-  ask farmers [ set shared-now 0 ]
+  ask farmers [ set shared-now 0 ]  ; reset sharing amount
+
   ask farmers [
     let deficit required-water - available-water
-    if deficit <= 0 [ stop ]   ;; skip if no need
+    if deficit <= 0 [ stop ]  ; skip if no need
+
+    ;; --- Step 1: Buy water from friends first ---
+    let friends sort friendship-neighbors  ;; convert agentset to list for foreach
+    ;; sort by friendship strength descending
+    set friends sort-by [[?1 ?2] -> ([strength] of friendship ([who] of self) ([who] of ?1)) > ([strength] of friendship ([who] of self) ([who] of ?2))] friends
+
+    foreach friends [
+      friend ->
+      let friend-surplus max (list 0 ([available-water] of friend - [required-water] of friend))
+      if friend-surplus > 0 and deficit > 0 [
+        let friend-link friendship ([who] of self) ([who] of friend)
+
+        ;; free water if extremely high friendship
+        ifelse [strength] of friend-link >= 0.95 [
+          let amount-to-get min (list friend-surplus deficit)
+          set available-water available-water + amount-to-get
+          ask friend [ set available-water available-water - amount-to-get ]
+          set deficit required-water - available-water
+        ]
+        ;; otherwise buy water (price scaled by friend's land size)
+         [
+          let price-per-acre 50
+          let amount-to-buy min (list friend-surplus deficit)
+          let cost amount-to-buy * price-per-acre * [land-size] of friend
+          if wealth >= cost [
+            set available-water available-water + amount-to-buy
+            ask friend [ set available-water available-water - amount-to-buy ]
+            set wealth wealth - cost
+            ask friend [ set wealth wealth + cost ]
+            set deficit required-water - available-water
+            set total-trades total-trades + 1
+            set trade-volume trade-volume + amount-to-buy
+          ]
+        ]
+      ]
+    ]
+
+    ;; --- Step 2: Normal sharing attempt if still in deficit ---
+    set deficit required-water - available-water
+    if deficit <= 0 [ stop ]
 
     let available_ratio available-water / required-water
     let a 8
-    let p_ask 1 / (1 + exp (- a * (1 - available_ratio))) ; low water -> high chance to ask
+    let p_ask 1 / (1 + exp(- a * (1 - available_ratio)))  ; low water -> high chance to ask
 
     let cnt 0
     let limit 5
-    while [ random-float 1 < p_ask and cnt < limit ] [
+    while [ random-float 1 < p_ask and cnt < limit and deficit > 0 ] [
       set cnt cnt + 1
 
       let friend one-of friendship-neighbors
@@ -272,57 +352,49 @@ to share-water
           let max-give my-surplus * 0.5  ;; never give more than half surplus
 
           if max-give > 0 [
-            ;; get connection
+            ;; get link to requester
             let friend-link friendship ([who] of self) ([who] of myself)
 
-            ;; acceptance probability depends on:
-            ;; - my friendliness
-            ;; - strength of the tie
-            ;; - balance history
-            ;; - social credit of requester
-            let f  friendliness
+            ;; acceptance probability depends on friendliness, tie strength, history
+            let f friendliness
             let sc [social-credit] of myself
             let str [strength] of friend-link
             let bal [water-a-to-b-balance] of friend-link
-            ;show friend-link
-            if ([who] of self = [end1] of friend-link) [set bal (- bal) ]
+            if ([who] of self = [end1] of friend-link) [ set bal (- bal) ]
 
-            ;; logistic acceptance probability -> each parameter normalised to -1 to 1
             let accept-factor (
-              base-share              + ;; don't give water if no real need
-              w_f * 2 * (f - 0.5)            +   ;; friendly farmers give more
-              w_str * 2 * (str - 0.5)        +   ;; strong friendship
-              w_bal * bal        +   ;; positive trade history
-              w_sc * 0.1 * sc         +   ;; high-social-credit requester
-              w_def * 1 * (deficit / [required-water] of myself) ;; urgent need
+              base-share +
+              w_f * 2 * (f - 0.5) +
+              w_str * 2 * (str - 0.5) +
+              w_bal * bal +
+              w_sc * 0.1 * sc +
+              w_def * 1 * (deficit / [required-water] of myself)
             )
-            let p_accept 1 / (1 + exp (-(accept-factor)))
-            ;show deficit
-            ;show p_accept
+            let p_accept 1 / (1 + exp(- accept-factor))
 
             ifelse random-float 1 < p_accept [
-              ;show "accept"
-              ;; actual transfer amount
+              ;; transfer amount
               let amount min (list max-give deficit)
-
-              ;; donor gives
               set available-water available-water - amount
               set shared-now shared-now + amount
+              ask myself [ set available-water available-water + amount set shared-now shared-now - amount ]
 
-              ;; requester receives
-              ask myself [
-                set available-water available-water + amount
-                set shared-now shared-now - amount
+              ;; pay for shared water (unless free due to friendship)
+              if str < 0.95 [
+                let price-per-acre 50
+                let cost amount * price-per-acre * [land-size] of self
+                set wealth wealth - cost
+                ask friend [ set wealth wealth + cost ]
               ]
 
               ;; update friendship
               ask friend-link [
-                ifelse ([who] of myself = [end1] of friend-link) ; update balance in correct direction
+                ifelse ([who] of myself = [end1] of friend-link)
                 [ set water-a-to-b-balance water-a-to-b-balance + amount ]
                 [ set water-a-to-b-balance water-a-to-b-balance - amount ]
-                set strength min(list 1 (strength + 0.1))
+                set strength min (list 1 (strength + 0.1))
                 set color scale-color red (abs water-a-to-b-balance) 1 0
-                set total-trades (total-trades + 1)
+                set total-trades total-trades + 1
                 set trade-volume trade-volume + amount
               ]
               set social-credit (social-credit + 0.1 * sc)
@@ -331,14 +403,20 @@ to share-water
           ]
         ]
       ]
-    set deficit required-water - available-water
-    if deficit <= 0 [ stop ]   ;; skip if no need
-
-    set available_ratio available-water / required-water
-    set p_ask 1 / (1 + exp (- a * (1 - available_ratio))) ; low water -> high chance to ask
+      ;; update deficit for next iteration
+      set deficit required-water - available-water
+      if deficit <= 0 [ stop ]
+      set available_ratio available-water / required-water
+      set p_ask 1 / (1 + exp(- a * (1 - available_ratio)))
     ]
   ]
 end
+
+
+
+
+
+
 
 ;========================
 ; THEFT
@@ -363,7 +441,6 @@ to attempt-theft
       ;; sort by: high water, low social credit, weak ties (easier to steal from)
       let sorted-targets sort-by [ [a b] -> (heuristic-value self a) > (heuristic-value self b) ] candidates
 
-
       ;; thief can try up to 3 different victims
       let tries 0
 
@@ -374,18 +451,19 @@ to attempt-theft
         set tries tries + 1
 
         ;; --- Compute theft probability ------------------------
+        let safe-required max (list required-water 0.0001)  ;; avoid division by zero
+        let deficit-ratio remaining-deficit / safe-required  ; would steal if i have more deficit
 
-        let deficit-ratio remaining-deficit / required-water ; would steal if i have more deficit
-        let victim-water [available-water] of victim ; more likely to steal if other person has a lot of water
-        let friendly-thief friendliness ; wouldn't want to steal if i am friendly
-        let sc-thief social-credit ; wouldn't wat to steal if i have people's respect -> won't want to harm image
-        let sc-victim [social-credit] of victim ; would be more likely to steal from people with less social credit
-        let victim-wealth [ wealth ] of victim ; less likely to steal from rich as they can take legal action - ignore for now
+        let victim-water [available-water] of victim  ; more likely to steal if other person has a lot of water
+        let friendly-thief friendliness  ; wouldn't want to steal if i am friendly
+        let sc-thief social-credit        ; wouldn't want to steal if i have people's respect -> won't want to harm image
+        let sc-victim [social-credit] of victim  ; more likely to steal from people with less social credit
+        let victim-wealth [ wealth ] of victim  ; less likely to steal from rich as they can take legal action - ignore for now
         let str 0
         if (friendship-neighbor? victim) [set str [strength] of friendship (who) ([who] of victim)]
 
-        ;; retaliation: if victim was recently stolen
-        ; let retaliation (ifelse-value ([last-stolen] of victim > 0) [0.5] [1])
+        ;; adjust theft probability based on victim land size
+        let size-penalty 0.05 * ([land-size] of victim / 10)  ;; bigger farms are harder to steal from
 
         ;; FEATURES → logistic acceptance P(theft)
         let x (
@@ -394,8 +472,9 @@ to attempt-theft
           theft_w_vwater * (victim-water / 10) +
           theft_w_f     * (-2 * (friendly-thief - 0.5)) +       ; my friendliness
           theft_w_sc    * (- sc-thief / 10) +
-          theft_w_vsc    * (- sc-victim / 10) +          ; low social-credit victim easier
+          theft_w_vsc   * (- sc-victim / 10) +          ; low social-credit victim easier
           theft_w_str   * (- str)                           ; less likely to steal from friends
+          - size-penalty                                   ; less likely to steal from larger farms
           ; w_ret   * retaliation
         )
 
@@ -442,6 +521,8 @@ to attempt-theft
   ]
 end
 
+
+
 to update-theft-links
   ask thefts [
     if (amount-stolen > 0) [ set color red]
@@ -450,41 +531,72 @@ end
 
 to detect-thefts
   ask farmers [
-    let my-water available-water / land-size ; what is my ratio of water to land
+    ;; my water per unit land, avoid division by zero
+    let safe-land-size max (list land-size 0.0001)
+    let my-water available-water / safe-land-size
 
-    ; what is my friends ratio of water to land
+    ;; pick one friend below me (ycor lower)
     let f1 one-of friendship-neighbors with [ ycor < [ycor] of myself ]
-    if f1 = nobody [ stop ]
-    let est-water [ available-water ] of f1 / [ land-size ] of f1
+    if f1 != nobody [
+      ;; friend's water per unit land, avoid division by zero
+      let safe-friend-land-size max (list [land-size] of f1 0.0001)
+      let est-water [available-water] of f1 / safe-friend-land-size
 
-    if (my-water / est-water) <  (1 - suspicion-threshold) ; if i have suspiciously less water -> I check for thieves, costing me money and friendliness but catching all thefts
-    [
-      set total-theft-checks total-theft-checks + 1
-      set friendliness (friendliness * 0.9)
-      ; set wealth wealth - 10
-      let thieves my-in-thefts
+      ;; adjust suspicion threshold based on victim's land size
+      let size-suspicion 0.1 * ([land-size] of f1 / 10)  ;; bigger farms increase suspicion
 
-      if count thieves = 0
-      [ set suspicion-threshold min(list 0.5 (suspicion-threshold + 0.01)) ] ; if there are no thieves, my threshold rises
+      ;; suspicious if my ratio is lower than friend's by threshold
+      if est-water > 0 [
+        if (my-water / est-water) < (1 - suspicion-threshold - size-suspicion) [
+          set total-theft-checks total-theft-checks + 1
+          set friendliness friendliness * 0.9
 
-      ask thieves [
-        if random-float 1 < detection-likelihood [
-          set detected-thefts detected-thefts + 1
+          ;; cost of inquiry
+          let inquiry-cost 10
+          set wealth wealth - inquiry-cost
 
-          ask end2 [
-            set available-water available-water + [amount-stolen] of myself
-            set suspicion-threshold max(list 0.02 (suspicion-threshold - 0.01)) ; if there are thieves, my threshold reduces
+          ;; convert agentset of suspected theft links to list
+          let theft-links-list sort my-in-thefts
+
+          if empty? theft-links-list [
+            set suspicion-threshold min (list 0.5 (suspicion-threshold + 0.01))
           ]
-          ask end1 [
-            set available-water available-water - [amount-stolen] of myself
-            set social-credit max(list -10 (social-credit - 0.1 * [social-credit] of [end1] of myself))
+
+          foreach theft-links-list [
+            t-link ->
+              ;; access properties of the link directly
+              let stolen-amount [amount-stolen] of t-link
+              let victim [end2] of t-link
+              let thief [end1] of t-link
+
+              ;; return stolen water to victim
+              ask victim [
+                set available-water available-water + stolen-amount
+                set suspicion-threshold max (list 0.02 (suspicion-threshold - 0.01))
+              ]
+
+              ;; punish thief
+              ask thief [
+                set wealth wealth - 2 * stolen-amount * 50
+                set available-water available-water - stolen-amount
+                set social-credit max (list -10 (social-credit - 0.1 * social-credit))
+              ]
+
+              ;; mark theft as detected
+              set detected-thefts detected-thefts + 1
           ]
-          set color green
         ]
       ]
     ]
   ]
 end
+
+
+
+
+
+
+
 
 to delete-thefts
   wait 0.1
@@ -497,44 +609,32 @@ end
 ;========================
 
 to grow-crops
+  if revenue > 0 [ stop ] ; NEW: If I have already harvested this season, stop.
   if 1 + crop-stage >= length crop-water-profile [ stop ] ; done with crops for this season
   if crop-stage < 0 [  ; haven't started growing for this season
     set crop-stage crop-stage + 1
     stop
   ]
   let multiplier (available-water / required-water) * growth-efficiency  ; calculate growth multiplier based on water & global growth factor
-  set multiplier max (list 0.8 (min list multiplier 1.2))  ; clamp multiplier to prevent extreme growth/decay
+  set multiplier max (list 0.8 (min (list multiplier 1.2)))  ; SYNTAX FIX: clamp multiplier to prevent extreme growth/decay
   set crop-quality crop-quality * multiplier  ; update crop quality based on water received and growth efficiency
   set crop-stage crop-stage + multiplier  ; advance crop stage -> based on how much water given
   if 1 + crop-stage >= length crop-water-profile [  ; check if crop reached final stage
-    set wealth wealth + (crop-quality * land-size)  ; harvest: wealth gain proportional to quality & land -> then wait till next season
+    set revenue crop-quality * land-size * 40 * harvest-price ; calculate revenue (Yield 40 units/acre * Price). Removed /40.
+    set profit revenue - total-cost ; calculate profit after seed + maintenance costs
+    set wealth wealth + revenue ; add revenue to wealth
   ]
 end
 
 to update-season
   if week = 1 [  ; every 26 weeks, switch season
     ifelse season = "rabi" [set season "kharif"][set season "rabi"]  ; toggle season
+
+    ; calling this function replaces the manual logic you had here.
+    ; this ensures costs are deducted (fixing the wealth bug) and crops are assigned.
+    assign-crops
+
     ask farmers [
-      if season = "rabi" [
-        ifelse random-float 1 < 0.5 [
-          set crop-type "wheat"  ; assign wheat randomly
-          set crop-water-profile wheat-req  ; set corresponding water profile
-        ][
-          set crop-type "mustard"  ; assign mustard otherwise
-          set crop-water-profile mustard-req
-        ]
-      ]
-      if season = "kharif" [
-        ifelse random-float 1 < 0.5 [
-          set crop-type "rice"  ; assign rice randomly
-          set crop-water-profile rice-req
-        ][
-          set crop-type "cotton"  ; assign cotton otherwise
-          set crop-water-profile cotton-req
-        ]
-      ]
-      set crop-stage ((random (crop-stage-variance + 1)) - (crop-stage-variance))  ; reset crop stage for new season -> some may start upto 5 weeks later
-      set crop-quality 1  ; reset crop quality
       if last-flood? [set crop-quality crop-quality * 1.1]  ; apply flood fertility bonus if last season had flood
     ]
     set last-flood? false  ; clear flood flag after applying bonus
@@ -1139,6 +1239,174 @@ detection-likelihood
 1
 0.5
 0.05
+1
+NIL
+HORIZONTAL
+
+PLOT
+1092
+625
+1334
+787
+Average wealth
+ticks
+wealth
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "if any? farmers [plot mean [wealth] of farmers]"
+
+SLIDER
+501
+618
+673
+651
+wheat-price
+wheat-price
+3000
+4000
+3000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+501
+658
+673
+691
+mustard-price
+mustard-price
+5000
+7000
+5000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+503
+703
+675
+736
+rice-price
+rice-price
+4000
+5000
+4000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+502
+748
+674
+781
+cotton-price
+cotton-price
+7000
+10500
+7000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+701
+619
+873
+652
+wheat-seed-cost
+wheat-seed-cost
+5000
+8500
+8500.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+702
+662
+874
+695
+mustard-seed-cost
+mustard-seed-cost
+1000
+2000
+2000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+702
+704
+874
+737
+rice-seed-cost
+rice-seed-cost
+3500
+7500
+7500.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+701
+749
+873
+782
+cotton-seed-cost
+cotton-seed-cost
+4000
+15000
+15000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+895
+616
+1080
+649
+global-maintenance-cost
+global-maintenance-cost
+60000
+150000
+70000.0
+10000
+1
+NIL
+HORIZONTAL
+
+SLIDER
+899
+669
+1088
+702
+base-water-cost-per-unit
+base-water-cost-per-unit
+400
+2000
+500.0
+100
 1
 NIL
 HORIZONTAL
