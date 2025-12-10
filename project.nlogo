@@ -8,13 +8,13 @@
 
 breed [ farmers farmer ]
 farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile shared-now stolen-now suspicion-threshold
-              seed-cost maintenance-cost harvest-price total-cost revenue profit p-steal-base share-aggressiveness current-strategy ] ; added crop economic variables & farmer strategy
+              seed-cost maintenance-cost harvest-price total-cost revenue profit p-steal-base share-aggressiveness current-strategy living-cost ] ; added crop economic variables & farmer strategy
 
 undirected-link-breed [ friendships friendship ]
 friendships-own [ water-a-to-b-balance strength ]
 directed-link-breed [ thefts theft ]
 thefts-own [ amount-stolen ]
-globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades trade-volume theft-volume total-theft-checks ]
+globals [total-land farmer-order rice-req cotton-req wheat-req mustard-req week season total-flow total-thefts detected-thefts current-event last-flood? rainfall-factor growth-efficiency total-trades trade-volume theft-volume total-theft-checks dropped-friendships]
 
 ;========================
 ; SETUP FUNCTIONS
@@ -60,6 +60,9 @@ to setup-farmers
   create-farmers num-farmers [
     set shape "person farmer" ; agent is a farmer
     set land-size min(list 29 max(list 3 int exp (random-normal 1.5 0.8))) ; give random amount of land
+    if land-size < 7 [ set living-cost 0.5 * base-living-cost-month ]
+    if (land-size >= 7 and land-size < 15) [ set living-cost base-living-cost-month ]
+    if land-size >= 15 [ set living-cost 1.5 * base-living-cost-month ]
     set social-credit ln(land-size + 1) + random-float 0.5 ; my social standing depends on how much land I have
     set suspicion-threshold (0.05 + random-float 0.2) ; 0.05 -> 0.25
     ;set land-size max(list 3 int (random-normal 10 5)) ; give random amount of land
@@ -76,6 +79,7 @@ to setup-farmers
 end
 
 to setup-friendships
+  set dropped-friendships 0
   ask farmers [
   ; 1. Spatial neighbor (ycor + 1)
   let neighbor-farmer one-of farmers with [ycor = [ycor] of myself + 1 and not link-neighbor? myself]
@@ -152,16 +156,12 @@ to assign-crops
     let final-choice ""
     let strategic-choice? false
 
-    ; Assess Water Stress (Remains the same for strategy classification)
-    let required-safe max (list required-water 0.001) ; Safety check
-    let deficit-stress max(list 0 ((required-water - predicted-water) / required-safe))
-
     ; 3. STRATEGIC DECISION (Only proceeds if at least one crop is affordable)
     if not empty? viable-options [
 
       ; A. MAX PROFIT (RISK/REWARD) STRATEGY:
       ; Farmer is highly secure (wealth is > 2x max-cost) AND water stress is low
-      if wealth > (max-seasonal-cost * 2) and deficit-stress < 0.1 [
+      if wealth > (max-seasonal-cost * 2) [
         set strategic-choice? true
 
         ; Select highest profit among viable options
@@ -173,8 +173,8 @@ to assign-crops
       ]
 
       ; B. MAX EFFICIENCY (SURVIVAL) STRATEGY:
-      ; Farmer is stressed (wealth is low OR water stress is high)
-      if (not strategic-choice?) and (wealth < (max-seasonal-cost * 1.5) or deficit-stress > 0.5) [
+      ; Farmer is stressed (wealth is low)
+      if (not strategic-choice?) and (wealth < (max-seasonal-cost * 1.5)) [
         set strategic-choice? true
 
         ; Select highest efficiency among viable options
@@ -185,7 +185,7 @@ to assign-crops
         if final-choice = "" [ set final-choice one-of viable-options ]
       ]
 
-      ; C. DEFAULT STRATEGY (Medium wealth/stress): Random selection from affordable crops
+      ; C. DEFAULT STRATEGY (Medium wealth): Random selection from affordable crops
       if not strategic-choice? [
         set final-choice one-of viable-options
         set strategic-choice? true
@@ -216,31 +216,31 @@ to apply-crop-attributes [chosen-crop]
   if chosen-crop = "rice" [
     set crop-water-profile rice-req
     set seed-cost rice-seed-cost + random-float (0.2 * rice-seed-cost)
-    set maintenance-cost global-maintenance-cost + random-float 2000
+    set maintenance-cost base-maintenance-cost + random-float 2000
     set harvest-price rice-price
   ]
   if chosen-crop = "cotton" [
     set crop-water-profile cotton-req
     set seed-cost cotton-seed-cost + random-float (0.2 * cotton-seed-cost)
-    set maintenance-cost global-maintenance-cost + random-float 3000
+    set maintenance-cost 2 * base-maintenance-cost + random-float 3000
     set harvest-price cotton-price
   ]
   if chosen-crop = "wheat" [
     set crop-water-profile wheat-req
     set seed-cost wheat-seed-cost + random-float (0.3 * wheat-seed-cost)
-    set maintenance-cost global-maintenance-cost + random-float 1000
+    set maintenance-cost base-maintenance-cost + random-float 1000
     set harvest-price wheat-price
   ]
   if chosen-crop = "mustard" [
     set crop-water-profile mustard-req
     set seed-cost mustard-seed-cost + random-float (0.1 * mustard-seed-cost)
-    set maintenance-cost global-maintenance-cost + random-float 500
+    set maintenance-cost 0.5 * base-maintenance-cost + random-float 500
     set harvest-price mustard-price
   ]
 
   ; Final Cost Calculation and Deduction (Done ONLY ONCE)
   set total-cost seed-cost + maintenance-cost ; total crop cost
-  set wealth wealth - total-cost ; deduct cost at start of season
+  set wealth wealth - total-cost * land-size; deduct cost at start of season
 
   ; Reset growth variables
   set crop-stage ((random (crop-stage-variance + 1)) - crop-stage-variance)
@@ -253,29 +253,32 @@ to-report crop-economic-profile [crop-name]
   let seed 0
   let price 0
   let water-profile []
+  let maintenance 0
 
   if crop-name = "rice" [
     set seed rice-seed-cost
     set price rice-price
     set water-profile rice-req
+    set maintenance base-maintenance-cost
   ]
   if crop-name = "cotton" [
     set seed cotton-seed-cost
     set price cotton-price
     set water-profile cotton-req
+    set maintenance 2 * base-maintenance-cost
   ]
   if crop-name = "wheat" [
     set seed wheat-seed-cost
     set price wheat-price
     set water-profile wheat-req
+    set maintenance base-maintenance-cost
   ]
   if crop-name = "mustard" [
     set seed mustard-seed-cost
     set price mustard-price
     set water-profile mustard-req
+    set maintenance 0.5 * base-maintenance-cost
   ]
-
-  let maintenance global-maintenance-cost
 
   ; Calculate total water required (sum of weekly reqs)
   let total-water-req (sum water-profile)
@@ -285,7 +288,7 @@ to-report crop-economic-profile [crop-name]
   let water-cost (base-water-cost-per-unit * total-water-req * land-size)
 
   ; UPDATED: Total estimated cost now includes seed, maintenance, and estimated water
-  let total-cost1 seed + maintenance + water-cost
+  let total-cost1 ((seed + maintenance) * land-size) + water-cost
 
   let max-revenue 40 * price * land-size ; Assuming 40 units/acre yield
   let max-profit max-revenue - total-cost1 ; Max estimated NET profit
@@ -328,11 +331,13 @@ to go
   update-land ; update farmland color/stage
   allocate-water ; distribute water to farmers based on availability
   deduct-weekly-water-fees
+  deduct-living-cost
   ask farmers [ update-strategy ]
   share-water ; farmers request/share water with their connections
   attempt-theft ; farmers attempt to steal water
   update-theft-links ; visualise theft amounts
   detect-thefts ; check for thefts
+  update-friendships
   ask farmers [ grow-crops ] ; update crop growth and quality
   tick
 end
@@ -347,17 +352,17 @@ to check-environment
   set growth-efficiency 1.0
 
   let r random-float 1
-  if r < 0.03 [
+  if r < flood-prob [
     set current-event "flood"
     set rainfall-factor (1.5 + random-float 0.8) ; 1.5–2.3× flow
     set growth-efficiency 0.8 ; waterlogging => less effective growth now
   ]
-  if r >= 0.03 and r < 0.10 [
+  if r >= flood-prob and r < flood-prob + heavy-rain-prob [
     set current-event "heavy-rain"
     set rainfall-factor (1.2 + random-float 0.5) ; 1.2–1.7× flow
     set growth-efficiency 0.9 ; some waterlogging reduces effective growth
   ]
-  if r >= 0.10 and r < 0.15 [
+  if r >= flood-prob + heavy-rain-prob and r < flood-prob + heavy-rain-prob + drought-prob [
     set current-event "drought"
     set rainfall-factor (0.4 + (random-float 0.4)) ; 0.4–0.8× flow
     set growth-efficiency 0.9 ; heat/drought stress may slightly lower efficiency
@@ -392,8 +397,8 @@ end
 
 to update-water-flow
   let season-factor 1.0
-  if season = "kharif" [ set season-factor 1.4 ]
-  if season = "rabi"   [ set season-factor 0.6 ]
+  if season = "kharif" [ set season-factor 1.3 ]
+  if season = "rabi"   [ set season-factor 0.7 ]
   set total-flow base-flow * season-factor ; base flow * season factor
   set total-flow total-flow * rainfall-factor ; apply rainfall/drought factor
   set total-flow total-flow * (0.8 + random-float 0.4) ; random fluctuation
@@ -424,7 +429,7 @@ to allocate-water
     ]
     ;set required-water land-size * item crop-stage crop-water-profile
     let loss-factor 1 - (0.01 * ycor); more loss further downstream -> higher ycor. for 32 pos, 32% water loss
-    set available-water land-size * water-per-acre * (loss-factor + random-float water-randomness) ; get water as per land (and loss w/ some randomness)
+    set available-water land-size * water-per-acre * (loss-factor + (random-float water-randomness) - (water-randomness / 2)) ; get water as per land (and loss w/ some randomness)
     set predicted-water available-water ; I expect to receive as much as allocated
   ]
 end
@@ -438,6 +443,11 @@ to deduct-weekly-water-fees
   ]
 end
 
+to deduct-living-cost
+  ask farmers [
+    set wealth wealth - living-cost
+  ]
+end
 
 to share-water
   ask farmers [ set shared-now 0 ]  ; reset sharing amount
@@ -742,7 +752,7 @@ to detect-thefts
               ask thief [
                 set wealth wealth - economic-penalty ; double cost + land-size factor
                 set available-water available-water - stolen-amount ; confiscate stolen water
-                set social-credit max (list -10 (social-credit - 0.3 * social-credit)) ; major social penalty
+                set social-credit max (list -10 (social-credit - 0.3)) ; major social penalty
               ]
 
               ;; 3. Mark theft as detected
@@ -775,12 +785,14 @@ to grow-crops
     set crop-stage crop-stage + 1
     stop
   ]
-  let multiplier (available-water / required-water) * growth-efficiency  ; calculate growth multiplier based on water & global growth factor
+  let multiplier (available-water / required-water)  ; calculate growth multiplier based on water & global growth factor
   set multiplier max (list 0.8 (min (list multiplier 1.2)))  ; SYNTAX FIX: clamp multiplier to prevent extreme growth/decay
   set crop-quality crop-quality * multiplier  ; update crop quality based on water received and growth efficiency
-  set crop-stage crop-stage + multiplier  ; advance crop stage -> based on how much water given
+  set crop-quality max(list 0.3 (min (list 2 crop-quality)))
+  set crop-stage crop-stage + multiplier * growth-efficiency  ; advance crop stage -> based on how much water given
   if 1 + crop-stage >= length crop-water-profile [  ; check if crop reached final stage
     set revenue crop-quality * land-size * 40 * harvest-price ; calculate revenue (Yield 40 units/acre * Price). Removed /40.
+    show "harvested"
     set profit revenue - total-cost ; calculate profit after seed + maintenance costs
     set wealth wealth + revenue ; add revenue to wealth
   ]
@@ -793,6 +805,7 @@ to update-season
     ; This single call now handles ALL crop assignment, strategic choice,
     ; cost deduction, and initial growth variable setup.
     assign-crops
+    show "assigned"
 
     ask farmers [
       if last-flood? [set crop-quality crop-quality * 1.1]  ; apply flood fertility bonus if last season had flood
@@ -801,6 +814,34 @@ to update-season
   ]
 end
 
+;========================
+; Update Friendships
+;========================
+
+to update-friendships
+  ask friendships with [ strength < 0.05 ]
+  [
+    set dropped-friendships dropped-friendships + 1
+    ifelse random-float 1 < 0.5
+    [
+      ask end1 [
+        create-friendship-with one-of other farmers [
+          set water-a-to-b-balance 0
+          set strength [friendliness] of end1 * [friendliness] of end2
+        ]
+      ]
+    ]
+    [
+      ask end2 [
+        create-friendship-with one-of other farmers [
+          set water-a-to-b-balance 0
+          set strength [friendliness] of end1 * [friendliness] of end2
+        ]
+      ]
+    ]
+    die
+  ]
+end
 
 
 ;========================
@@ -831,14 +872,14 @@ to update-strategy
   ; --- ASSESSMENT FLAGS ---
   let is-poor (wealth < poor-T)
   let is-rich (wealth > rich-T)
-  let high-deficit (deficit-stress > 0.5)
-  let low-deficit (deficit-stress <= 0.1)
+  let high-deficit (deficit-stress > 0.2)
+  let low-deficit (deficit-stress <= 0.05)
 
   ; --- STRATEGY ADAPTATION ---
 
   ; Base P-steal on SC: Farmers with high social credit are more cautious.
   let sc-modifier social-credit / 10
-  set p-steal-base 0.05 - 0.03 * sc-modifier
+  set p-steal-base base-theft - sc-modifier
   set share-aggressiveness 0 ; Default
   set current-strategy "Baseline" ; <-- NEW: Set default strategy
 
@@ -846,14 +887,14 @@ to update-strategy
   if high-deficit [ ; High Deficit (Need Water Now)
     if is-poor [ ; Poor AND desperate -> High Risk/Survival Strategy
       ; High theft risk scaled by deficit stress
-      set p-steal-base 0.15 + (0.1 * deficit-stress)
+      set p-steal-base base-theft + deficit-stress
       set share-aggressiveness 0.8  ; Aggressive sharing/buying
       set friendliness max(list 0.1 (friendliness * 0.98)) ; Friendliness degrades under extreme stress
       set current-strategy "Poor/High-Risk" ; <-- NEW
     ]
     if not is-poor [ ; Not Poor (Medium or Rich) AND desperate -> Buy/Trade Aggressively
-      ; Low base theft probability, only increasing slightly if SC is very low/negative
-      set p-steal-base 0.01 + max(list 0 (0.04 - sc-modifier / 20))
+      ; Low base theft probability, only increasing slightly if SC is very low/negative -> dealt with in base case
+
       set share-aggressiveness 1.5 ; Very aggressive sharing/trading
       set friendliness min(list 1 (friendliness + 0.01))
       set current-strategy "Buy/Trade-Aggressive" ; <-- NEW
@@ -862,7 +903,7 @@ to update-strategy
 
   if low-deficit [
     if is-rich [ ; Low Deficit, Rich -> Social Investment Strategy
-      set p-steal-base 0.01 ; Min Theft Risk
+      set p-steal-base base-theft - 2 ; Min Theft Risk
       set share-aggressiveness -0.5 ; Less aggressive asking, more focus on GIVING (implied)
       set friendliness min(list 1 (friendliness + 0.02)) ; High Social Investment
       set suspicion-threshold max(list 0.05 (suspicion-threshold - 0.01)) ; Reduced paranoia
@@ -887,6 +928,26 @@ to-report heuristic-value [me target]
   ]
 
   report w - 0.5 * (sc / 10) - 0.3 * str
+end
+
+to-report gini [vals]
+  let sorted sort vals
+  let n length sorted
+  if n = 0 [ report 0 ]
+
+  let mean-value mean sorted
+  if mean-value = 0 [ report 0 ]
+
+  let cumulative 0
+  let weighted-sum 0
+  let i 1
+
+  foreach sorted [ v ->
+    set weighted-sum weighted-sum + i * v
+    set i i + 1
+  ]
+
+  report ( (2 * weighted-sum) / (n * sum sorted) - (n + 1) / n )
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -985,7 +1046,7 @@ base-flow
 base-flow
 0
 500
-50.0
+160.0
 5
 1
 NIL
@@ -1018,7 +1079,7 @@ Crop Quality
 NIL
 NIL
 0.0
-5.0
+2.5
 0.0
 10.0
 true
@@ -1081,10 +1142,10 @@ PENS
 "Friendliness" 1.0 0 -8330359 true "" "if any? farmers [plot mean [friendliness] of farmers]"
 
 PLOT
-1352
-215
-1574
-386
+1340
+216
+1557
+387
 Social Credits of Farmers
 NIL
 NIL
@@ -1099,10 +1160,10 @@ PENS
 "Social credits" 1.0 0 -16777216 true "" "if any? farmers [ plotxy ticks mean [social-credit] of farmers ]"
 
 PLOT
-1351
-398
 1575
-574
+16
+1875
+385
 Thefts
 Ticks
 Amount
@@ -1111,7 +1172,7 @@ Amount
 0.0
 10.0
 true
-false
+true
 "" ""
 PENS
 "Total Thefts" 1.0 0 -13791810 true "" "plot total-thefts\n\n"
@@ -1119,38 +1180,20 @@ PENS
 
 MONITOR
 20
-230
-151
-275
-friendship strength
+256
+176
+301
+avg friendship strength
 mean [strength] of friendships
 5
 1
 11
 
-PLOT
-1606
-133
-1892
-494
-Friendship Balance
-NIL
-NIL
--1.0
-1.0
-0.0
-400.0
-true
-false
-"" ""
-PENS
-"default" 0.1 1 -16777216 true "" "histogram [water-a-to-b-balance] of friendships"
-
 SLIDER
 50
-543
+569
 222
-576
+602
 w_f
 w_f
 0
@@ -1163,9 +1206,9 @@ HORIZONTAL
 
 SLIDER
 46
-674
+700
 218
-707
+733
 w_sc
 w_sc
 0
@@ -1178,9 +1221,9 @@ HORIZONTAL
 
 SLIDER
 48
-584
+610
 220
-617
+643
 w_str
 w_str
 0
@@ -1193,9 +1236,9 @@ HORIZONTAL
 
 SLIDER
 47
-628
+654
 219
-661
+687
 w_bal
 w_bal
 0
@@ -1208,9 +1251,9 @@ HORIZONTAL
 
 SLIDER
 46
-718
+744
 218
-751
+777
 w_def
 w_def
 0
@@ -1223,9 +1266,9 @@ HORIZONTAL
 
 SLIDER
 49
-499
+525
 221
-532
+558
 base-share
 base-share
 -5
@@ -1237,10 +1280,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-37
-289
-120
-334
+41
+314
+124
+359
 NIL
 total-trades
 17
@@ -1248,10 +1291,10 @@ total-trades
 11
 
 MONITOR
-31
-342
-126
-387
+35
+367
+130
+412
 NIL
 trade-volume
 5
@@ -1259,10 +1302,10 @@ trade-volume
 11
 
 SLIDER
-296
-718
-468
-751
+271
+755
+443
+788
 theft_w_def
 theft_w_def
 0
@@ -1274,10 +1317,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-297
-531
-469
-564
+272
+568
+444
+601
 theft_w_vwater
 theft_w_vwater
 0
@@ -1289,25 +1332,25 @@ NIL
 HORIZONTAL
 
 SLIDER
-298
-495
-470
-528
+273
+532
+445
+565
 base-theft
 base-theft
 -20
 20
--4.0
+1.0
 0.1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-298
-568
-470
-601
+273
+605
+445
+638
 theft_w_f
 theft_w_f
 0
@@ -1319,40 +1362,40 @@ NIL
 HORIZONTAL
 
 SLIDER
-297
+272
+679
+444
+712
+theft_w_sc
+theft_w_sc
+0
+3
+2.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+271
+717
+443
+750
+theft_w_vsc
+theft_w_vsc
+0
+3
+2.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+271
 642
-469
+443
 675
-theft_w_sc
-theft_w_sc
-0
-3
-2.0
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-296
-680
-468
-713
-theft_w_vsc
-theft_w_vsc
-0
-3
-2.0
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-296
-605
-468
-638
 theft_w_str
 theft_w_str
 0
@@ -1365,9 +1408,9 @@ HORIZONTAL
 
 MONITOR
 195
-232
+258
 275
-277
+303
 NIL
 total-thefts
 17
@@ -1375,10 +1418,10 @@ total-thefts
 11
 
 MONITOR
-230
-285
-322
-330
+178
+308
+270
+353
 NIL
 theft-volume
 5
@@ -1386,10 +1429,10 @@ theft-volume
 11
 
 MONITOR
-227
-341
-331
-386
+175
+364
+279
+409
 NIL
 detected-thefts
 17
@@ -1397,10 +1440,10 @@ detected-thefts
 11
 
 MONITOR
-230
-396
-331
-441
+178
+419
+279
+464
 sus-threshold
 mean [suspicion-threshold] of farmers
 5
@@ -1416,17 +1459,17 @@ water-randomness
 water-randomness
 0
 1
-0.0
-0.01
+0.1
+0.1
 1
 NIL
 HORIZONTAL
 
 MONITOR
-37
-400
-120
-445
+41
+425
+124
+470
 friendliness
 mean [friendliness] of farmers
 5
@@ -1435,9 +1478,9 @@ mean [friendliness] of farmers
 
 MONITOR
 287
-233
+259
 392
-278
+304
 NIL
 total-theft-checks
 17
@@ -1453,22 +1496,22 @@ crop-stage-variance
 crop-stage-variance
 0
 10
-2.0
+4.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-298
-459
-480
-492
+273
+496
+455
+529
 detection-likelihood
 detection-likelihood
 0
 1
-0.5
+0.4
 0.05
 1
 NIL
@@ -1479,18 +1522,18 @@ PLOT
 603
 1334
 765
-Average wealth
+Wealth Distribution
 ticks
 wealth
 0.0
-10.0
+5000000.0
 0.0
 10.0
 true
 false
 "" ""
 PENS
-"default" 1.0 0 -16777216 true "" "if any? farmers [plot mean [wealth] of farmers]"
+"default" 100000.0 1 -955883 true "" "histogram [wealth] of farmers"
 
 SLIDER
 501
@@ -1613,25 +1656,25 @@ NIL
 HORIZONTAL
 
 SLIDER
-895
-627
-1080
-660
-global-maintenance-cost
-global-maintenance-cost
+885
+629
+1083
+662
+base-maintenance-cost
+base-maintenance-cost
 60000
 150000
-70000.0
+80000.0
 10000
 1
 NIL
 HORIZONTAL
 
 SLIDER
-899
-680
-1088
-713
+893
+671
+1082
+704
 base-water-cost-per-unit
 base-water-cost-per-unit
 400
@@ -1643,10 +1686,10 @@ NIL
 HORIZONTAL
 
 PLOT
-1355
-600
-1576
-770
+1528
+406
+1903
+759
 Strategy
 Ticks
 Number of Farmers
@@ -1655,7 +1698,7 @@ Number of Farmers
 0.0
 10.0
 true
-false
+true
 "" ""
 PENS
 "Poor/High Risk" 1.0 0 -2674135 true "" "plot count farmers with [current-strategy = \"Poor/High-Risk\"]"
@@ -1675,9 +1718,9 @@ This is all related to Wealth
 
 TEXTBOX
 65
-458
+484
 215
-496
+522
 This is all related to theft/sharing water
 15
 0.0
@@ -1692,6 +1735,146 @@ General setup commands for the world
 15
 0.0
 1
+
+PLOT
+1347
+601
+1526
+762
+Wealth Variance
+NIL
+NIL
+0.0
+10.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot standard-deviation [wealth] of farmers"
+
+PLOT
+1341
+405
+1521
+578
+Friendship Balance
+NIL
+NIL
+-1.0
+1.0
+0.0
+400.0
+true
+false
+"" ""
+PENS
+"default" 0.1 1 -16777216 true "" "histogram [water-a-to-b-balance] of friendships"
+
+SLIDER
+9
+213
+123
+246
+flood-prob
+flood-prob
+0
+1
+0.01
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+132
+214
+271
+247
+heavy-rain-prob
+heavy-rain-prob
+0
+1 - flood-prob
+0.05
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+279
+214
+410
+247
+drought-prob
+drought-prob
+0
+1 - flood-prob - heavy-rain-prob
+0.05
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+879
+711
+1089
+744
+base-living-cost-month
+base-living-cost-month
+0
+100000
+20000.0
+1000
+1
+NIL
+HORIZONTAL
+
+MONITOR
+412
+265
+469
+310
+NIL
+season
+17
+1
+11
+
+MONITOR
+300
+374
+456
+419
+NIL
+min [wealth] of farmers
+0
+1
+11
+
+MONITOR
+300
+419
+458
+464
+NIL
+max [wealth] of farmers
+0
+1
+11
+
+MONITOR
+306
+316
+445
+361
+NIL
+dropped-friendships
+17
+1
+11
 
 @#$#@#$#@
 ## WHAT IS IT?
