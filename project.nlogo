@@ -1,14 +1,10 @@
 ;========================
-; Libraries & Extensions
-;========================
-
-;========================
 ; GLOBALS AND BREEDS
 ;========================
 
 breed [ farmers farmer ]
-farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? predicted-water crop-type crop-water-profile shared-now stolen-now suspicion-threshold
-              seed-cost maintenance-cost harvest-price total-cost revenue profit p-steal-base share-aggressiveness current-strategy living-cost times-robbed num-trades num-shares crops-used strategies-used ] ; added crop economic variables & farmer strategy
+farmers-own [ land-size wealth crop-stage crop-quality available-water required-water friendliness social-credit theft-history last-stolen my-turn? crop-type crop-water-profile shared-now stolen-now suspicion-threshold
+              seed-cost maintenance-cost harvest-price total-cost revenue p-steal-base share-aggressiveness current-strategy living-cost times-robbed num-trades num-shares crops-used strategies-used ] ; added crop economic variables & farmer strategy
 
 undirected-link-breed [ friendships friendship ]
 friendships-own [ water-a-to-b-balance strength ]
@@ -263,7 +259,6 @@ to apply-crop-attributes [chosen-crop]
   set crop-stage ((random (crop-stage-variance + 1)) - crop-stage-variance)
   set crop-quality 1
   set revenue 0 ; reset revenue
-  set profit 0 ; reset profit
 end
 
 to-report crop-economic-profile [crop-name]
@@ -451,7 +446,6 @@ to allocate-water
     ;set required-water land-size * item crop-stage crop-water-profile
     let loss-factor 1 - (0.01 * ycor); more loss further downstream -> higher ycor. for 32 pos, 32% water loss
     set available-water land-size * water-per-acre * (loss-factor + (random-float water-randomness) - (water-randomness / 2)) ; get water as per land (and loss w/ some randomness)
-    set predicted-water available-water ; I expect to receive as much as allocated
   ]
 end
 
@@ -607,11 +601,6 @@ to share-water
     ]
   ]
 end
-
-
-
-
-
 
 
 ;========================
@@ -822,7 +811,6 @@ to grow-crops
   if 1 + crop-stage >= length crop-water-profile [  ; check if crop reached final stage
     set revenue crop-quality * land-size * 40 * harvest-price ; calculate revenue (Yield 40 units/acre * Price). Removed /40.
     ;show "harvested"
-    set profit revenue - total-cost ; calculate profit after seed + maintenance costs
     set wealth wealth + revenue ; add revenue to wealth
   ]
 end
@@ -879,7 +867,7 @@ end
 
 to update-strategy
   let required-safe max (list required-water 0.001) ; Added safety check
-  let deficit-stress max(list 0 ((required-water - predicted-water) / required-safe))
+  let deficit-stress max(list 0 ((required-water - available-water) / required-safe))
 
   ; --- DYNAMIC ECONOMIC THRESHOLD CALCULATION ---
   ; This calculation ensures the thresholds scale with the farmer's land size and crop choice.
@@ -1798,7 +1786,7 @@ base-water-cost-per-unit
 base-water-cost-per-unit
 400
 2000
-600.0
+700.0
 100
 1
 NIL
@@ -1952,10 +1940,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-419
-208
-476
-253
+416
+255
+473
+300
 NIL
 season
 17
@@ -2473,6 +2461,324 @@ NetLogo 6.4.0
     </enumeratedValueSet>
     <enumeratedValueSet variable="base-water-cost-per-unit">
       <value value="600"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="vary-flow" repetitions="100" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>total-land</metric>
+    <metric>mean [wealth] of farmers</metric>
+    <metric>standard-deviation [wealth] of farmers</metric>
+    <metric>theft-volume</metric>
+    <metric>trade-volume</metric>
+    <metric>mean [strength] of friendships</metric>
+    <metric>mean [social-credit] of farmers</metric>
+    <metric>report-all-farmer-data</metric>
+    <enumeratedValueSet variable="rice-seed-cost">
+      <value value="5300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="drought-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-maintenance-cost">
+      <value value="80000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_sc">
+      <value value="1.9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-share">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-farmers">
+      <value value="33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_bal">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-theft">
+      <value value="-1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="detection-likelihood">
+      <value value="0.75"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-price">
+      <value value="9200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-price">
+      <value value="6000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vwater">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="crop-stage-variance">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_f">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-price">
+      <value value="3500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-seed-cost">
+      <value value="8400"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="rice-price">
+      <value value="4700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="heavy-rain-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-living-cost-month">
+      <value value="20000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_sc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_f">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-seed-cost">
+      <value value="1300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="flood-prob">
+      <value value="0.01"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vsc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="base-flow" first="100" step="60" last="280"/>
+    <enumeratedValueSet variable="theft_w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-seed-cost">
+      <value value="5800"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="water-randomness">
+      <value value="0.1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-water-cost-per-unit">
+      <value value="700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="vary-water-randomness" repetitions="100" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>water-randomness</metric>
+    <metric>mean [wealth] of farmers</metric>
+    <metric>standard-deviation [wealth] of farmers</metric>
+    <metric>theft-volume</metric>
+    <metric>trade-volume</metric>
+    <metric>mean [strength] of friendships</metric>
+    <metric>mean [social-credit] of farmers</metric>
+    <metric>report-all-farmer-data</metric>
+    <enumeratedValueSet variable="rice-seed-cost">
+      <value value="5300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="drought-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-maintenance-cost">
+      <value value="80000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_sc">
+      <value value="1.9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-share">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-farmers">
+      <value value="33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_bal">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-theft">
+      <value value="-1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="detection-likelihood">
+      <value value="0.75"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-price">
+      <value value="9200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-price">
+      <value value="6000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vwater">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="crop-stage-variance">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_f">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-price">
+      <value value="3500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-seed-cost">
+      <value value="8400"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="rice-price">
+      <value value="4700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="heavy-rain-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-living-cost-month">
+      <value value="20000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_sc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_f">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-seed-cost">
+      <value value="1300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="flood-prob">
+      <value value="0.01"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vsc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-flow">
+      <value value="160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-seed-cost">
+      <value value="5800"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="water-randomness" first="0" step="0.1" last="0.4"/>
+    <enumeratedValueSet variable="base-water-cost-per-unit">
+      <value value="700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="vary-crop-stage-variance" repetitions="100" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>crop-stage-variance</metric>
+    <metric>mean [wealth] of farmers</metric>
+    <metric>standard-deviation [wealth] of farmers</metric>
+    <metric>theft-volume</metric>
+    <metric>trade-volume</metric>
+    <metric>mean [strength] of friendships</metric>
+    <metric>mean [social-credit] of farmers</metric>
+    <metric>report-all-farmer-data</metric>
+    <enumeratedValueSet variable="rice-seed-cost">
+      <value value="5300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="drought-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-maintenance-cost">
+      <value value="80000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_sc">
+      <value value="1.9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_def">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-share">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-farmers">
+      <value value="33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_bal">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-theft">
+      <value value="-1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="detection-likelihood">
+      <value value="0.75"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-price">
+      <value value="9200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-price">
+      <value value="6000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vwater">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="crop-stage-variance" first="0" step="2" last="8"/>
+    <enumeratedValueSet variable="theft_w_f">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-price">
+      <value value="3500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cotton-seed-cost">
+      <value value="8400"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="rice-price">
+      <value value="4700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="heavy-rain-prob">
+      <value value="0.05"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-living-cost-month">
+      <value value="20000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_sc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="w_f">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mustard-seed-cost">
+      <value value="1300"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="flood-prob">
+      <value value="0.01"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_vsc">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-flow">
+      <value value="160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="theft_w_str">
+      <value value="2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="wheat-seed-cost">
+      <value value="5800"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="water-randomness">
+      <value value="0.1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="base-water-cost-per-unit">
+      <value value="700"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="theft_w_def">
       <value value="1.5"/>
