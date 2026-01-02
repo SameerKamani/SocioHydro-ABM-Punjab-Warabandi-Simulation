@@ -1,6 +1,6 @@
 # Socio-Hydrological Modeling of Cooperative and Competitive Water Use in Punjab's Traditional Irrigation Networks
 
-![System Flow Diagram](path/to/system-flow-diagram.png)  
+![System Flow Diagram](Images/Systemflow_v2.jpeg)  
 *(Figure 1 from the ODD: System flow diagram illustrating the core components and process structure of the agent-based irrigation model. Replace with actual image path if available.)*
 
 ## Overview
@@ -69,7 +69,7 @@ No additional dependencies are required, as NetLogo handles all simulations inte
    - **Monitors**: Real-time metrics (e.g., total-thefts, trade-volume, avg friendship strength).
    - **Plots**: Time-series (e.g., Water Required, Social Credits, Thefts) and distributions (e.g., Wealth, Strategies).
 
-   ![NetLogo Interface](path/to/interface-screenshot.png)  
+   ![NetLogo Interface](Images/Interface.png)  
    *(Figure 2 from the ODD: NetLogo model interface showing real-time monitors and plots. Replace with actual image path if available.)*
 
 2. **Running the Model**:
